@@ -12,7 +12,6 @@ interface OsirisMapProps {
   onRightClick?: (coords: { lat: number; lng: number }) => void;
   onViewStateChange?: (vs: { zoom: number; latitude: number }) => void;
   flyToLocation?: { lat: number; lng: number; ts: number } | null;
-  showWarSim?: boolean;
   projection?: 'mercator' | 'globe';
   mapStyle?: string;
 }
@@ -39,7 +38,7 @@ function computeSolarTerminator(): [number, number][] {
 
 const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] };
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, flyToLocation, showWarSim, projection = 'globe', mapStyle = 'dark' }: OsirisMapProps) {
+function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, flyToLocation, projection = 'globe', mapStyle = 'dark' }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -523,8 +522,32 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       </div>`);
     });
 
-    // Cursor handlers for all clickable layers
-    ['conflict-icons','cctv-dots','eq-circles','sat-dots','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots'].forEach(layer => {
+    // ── War Alerts ──
+    map.on('click', 'war-alerts-targets', e => {
+      if (!e.features?.length) return;
+      const p = e.features[0].properties as any;
+      const coords = (e.features[0].geometry as any).coordinates;
+      popup(coords, `<div style="${pStyle}border:1px solid rgba(255,23,68,0.3);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <span style="color:#FF1744;font-size:16px;font-weight:700;letter-spacing:0.1em;">${p.city}</span>
+          <span style="color:#FF1744;font-size:10px;">${p.type}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:8px;font-size:11px;">
+          <div><span style="color:#5C5A54;font-size:9px;">ORIGIN</span><br/><span style="color:#E8E6E0;">${p.originName || 'UNKNOWN'}</span></div>
+          <div><span style="color:#5C5A54;font-size:9px;">THREAT LEVEL</span><br/><span style="color:#FF1744;font-weight:bold;">${p.threatLevel}</span></div>
+          <div><span style="color:#5C5A54;font-size:9px;">STATUS</span><br/><span style="color:#00E5FF;">${p.status}</span></div>
+        </div>
+        ${p.sourceUrl ? `
+        <div style="margin-top:12px;">
+          <a href="${p.sourceUrl}" target="_blank" style="${linkStyle}color:#FF1744;border:1px solid rgba(255,23,68,0.4);background:rgba(255,23,68,0.1);">📰 VERIFY SOURCE</a>
+        </div>
+        ` : ''}
+      </div>`);
+      onEntityClick?.(p);
+    });
+
+    // ── Generic hover for clickables ──
+    ['conflict-icons','cctv-dots','eq-circles','sat-dots','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','war-alerts-targets'].forEach(layer => {
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
     });
@@ -736,41 +759,24 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
 
   // ── WAR SIMULATOR DATA SYNC ──
   useEffect(() => {
-    if (!mapReady || !showWarSim) {
-      setGeo('war-alerts-targets', []);
-      setGeo('war-alerts-lines', []);
-      return;
-    }
-    const fetchWarAlerts = async () => {
-      try {
-        const res = await fetch('/api/war-simulator');
-        if (res.ok) {
-          const data = await res.json();
-          const alerts = data.alerts || [];
-          
-          const targetFeatures = alerts.map((a: any) => ({
-            type: 'Feature',
-            geometry: { type: 'Point', coordinates: a.target },
-            properties: { city: a.city, type: a.type }
-          }));
+    if (!mapReady) return;
+    const alerts = data.war_alerts || [];
+    
+    const targetFeatures = alerts.map((a: any) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: a.target },
+      properties: { city: a.city, type: a.type, originName: a.originName, threatLevel: a.threatLevel, status: a.status, sourceUrl: a.sourceUrl }
+    }));
 
-          const lineFeatures = alerts.map((a: any) => ({
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: [a.origin, a.target] },
-            properties: {}
-          }));
+    const lineFeatures = alerts.map((a: any) => ({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [a.origin, a.target] },
+      properties: {}
+    }));
 
-          setGeo('war-alerts-targets', targetFeatures);
-          setGeo('war-alerts-lines', lineFeatures);
-        }
-      } catch (e) {
-        console.warn('War Simulator Map Sync Error:', e);
-      }
-    };
-    fetchWarAlerts();
-    const iv = setInterval(fetchWarAlerts, 3000);
-    return () => clearInterval(iv);
-  }, [mapReady, showWarSim, setGeo]);
+    setGeo('war-alerts-targets', activeLayers.war_alerts ? targetFeatures : []);
+    setGeo('war-alerts-lines', activeLayers.war_alerts ? lineFeatures : []);
+  }, [mapReady, data.war_alerts, activeLayers.war_alerts, setGeo]);
 
   // Visibility
   useEffect(() => {
@@ -792,8 +798,8 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     setVis(['choke-glow','choke-dots','choke-label'], activeLayers.maritime);
     setVis(['news-glow','news-dots','news-label'], activeLayers.live_news);
     setVis(['conflict-icons'], activeLayers.conflict_zones !== false);
-    setVis(['war-alerts-targets-glow','war-alerts-targets','war-alerts-label','war-alerts-lines'], !!showWarSim);
-  }, [mapReady, activeLayers, showWarSim, setVis]);
+    setVis(['war-alerts-targets-glow','war-alerts-targets','war-alerts-label','war-alerts-lines'], !!activeLayers.war_alerts);
+  }, [mapReady, activeLayers, setVis]);
 
   // Fly-to
   useEffect(() => {

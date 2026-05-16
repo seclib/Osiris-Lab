@@ -20,8 +20,6 @@ const LayerPanel = dynamic(() => import('@/components/LayerPanel'));
 const CameraViewer = dynamic(() => import('@/components/CameraViewer'));
 const OsintPanel = dynamic(() => import('@/components/OsintPanel'));
 const CompanyIntel = dynamic(() => import('@/components/CompanyIntel'));
-const WarSimulatorPanel = dynamic(() => import('@/components/WarSimulatorPanel'));
-
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -72,9 +70,8 @@ export default function Dashboard() {
   const [showLayers, setShowLayers] = useState(true);
   const [showMarkets, setShowMarkets] = useState(true);
   const [showIntel, setShowIntel] = useState(true);
-  const [showWarSim, setShowWarSim] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<'layers'|'markets'|'intel'|'search'|'recon'|'company'|'war_sim'|null>(null);
+  const [mobilePanel, setMobilePanel] = useState<'layers'|'markets'|'intel'|'search'|'recon'|'company'|null>(null);
   const [mapProjection, setMapProjection] = useState<'globe'|'mercator'>('globe');
   const [mapStyle, setMapStyle] = useState<'dark'|'satellite'>('dark');
 
@@ -99,6 +96,7 @@ export default function Dashboard() {
     weather: false,
     infrastructure: false,
     global_incidents: true,
+    war_alerts: false,
     gps_jamming: false,
     day_night: true,
   });
@@ -300,6 +298,11 @@ export default function Dashboard() {
       fetchEndpoint('/api/gdelt', d => ({ gdelt: d.events }));
       layerFetchedRef.current.add('gdelt');
     }
+    // War Alerts (Global Conflicts)
+    if (activeLayers.war_alerts && !layerFetchedRef.current.has('war_alerts')) {
+      fetchEndpoint('/api/war-simulator', d => ({ war_alerts: d.alerts }));
+      layerFetchedRef.current.add('war_alerts');
+    }
   }, [activeLayers]);
 
   // ── LAYER-AWARE POLLING — only poll data for active layers ──
@@ -320,9 +323,12 @@ export default function Dashboard() {
     if (activeLayers.flights || activeLayers.military || activeLayers.jets || activeLayers.private) {
       intervals.push(setInterval(() => fetchEndpoint('/api/flights'), 300000)); // 5 min (was 2 min)
     }
+    if (activeLayers.war_alerts) {
+      intervals.push(setInterval(() => fetchEndpoint('/api/war-simulator', d => ({ war_alerts: d.alerts })), 60000)); // 1 min
+    }
     // Fires: no polling needed (data changes very slowly, initial fetch is enough)
     return () => intervals.forEach(clearInterval);
-  }, [activeLayers.flights, activeLayers.military, activeLayers.jets, activeLayers.private]);
+  }, [activeLayers.flights, activeLayers.military, activeLayers.jets, activeLayers.private, activeLayers.war_alerts]);
 
   // CCTV: loaded once on layer toggle via layerFetchedRef (no viewport polling)
 
@@ -364,7 +370,6 @@ export default function Dashboard() {
         <OsirisMap 
           data={data} 
           activeLayers={activeLayers} 
-          showWarSim={showWarSim}
           projection={mapProjection} 
           mapStyle={mapStyle === 'satellite' ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : 'dark'} 
           onEntityClick={useCallback((entity: any) => {
@@ -483,17 +488,9 @@ export default function Dashboard() {
           <div className="flex-1"><SearchBar onLocate={(lat, lng) => setFlyToLocation({ lat, lng, ts: Date.now() })} /></div>
           <div className="relative"><SharePanel mapView={mapView} activeLayers={activeLayers} mouseCoords={mouseCoords} /></div>
         </div>
-        <button onClick={() => setShowWarSim(p => !p)} className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg transition-colors group">
-          <Radar className="w-4 h-4 text-red-500 group-hover:animate-pulse" />
-          <span className="text-[11px] font-mono font-bold text-red-400 tracking-widest">{showWarSim ? 'CLOSE WAR SIM' : 'ENGAGE WAR SIMULATOR'}</span>
-        </button>
         <OsintPanel />
         <CompanyIntel />
-        {showWarSim ? (
-          <WarSimulatorPanel onClose={() => setShowWarSim(false)} onLocate={(lat, lng) => setFlyToLocation({ lat, lng, ts: Date.now() })} />
-        ) : (
-          <LiveAlerts data={data} onLocate={(lat, lng) => setFlyToLocation({ lat, lng, ts: Date.now() })} onWatchFeed={(url, name) => { setLiveFeedUrl(url); setLiveFeedName(name); }} />
-        )}
+        <LiveAlerts data={data} onLocate={(lat, lng) => setFlyToLocation({ lat, lng, ts: Date.now() })} onWatchFeed={(url, name) => { setLiveFeedUrl(url); setLiveFeedName(name); }} />
       </div>
 
       {/* ── LIVE FEED VIEWER OVERLAY ── */}
@@ -576,12 +573,11 @@ export default function Dashboard() {
                 { id: 'recon' as const, icon: Radar, label: 'RECON' },
                 { id: 'company' as const, icon: Building2, label: 'INTEL DB' },
                 { id: 'search' as const, icon: Search, label: 'SEARCH' },
-                { id: 'war_sim' as const, icon: RadioTower, label: 'DEFCON' },
               ].map(tab => (
                 <button key={tab.id} onClick={() => setMobilePanel(mobilePanel === tab.id ? null : tab.id)}
                   className={`mobile-nav-btn ${mobilePanel === tab.id ? 'active' : ''}`}>
-                  <tab.icon className={`w-4 h-4 ${tab.id === 'recon' ? 'text-[var(--cyan-primary)]' : tab.id === 'war_sim' ? 'text-red-500' : ''} ${tab.id === 'war_sim' && showWarSim ? 'animate-pulse' : ''}`} />
-                  <span className={tab.id === 'recon' ? 'text-[var(--cyan-primary)]' : tab.id === 'war_sim' ? 'text-red-500 font-bold tracking-widest' : ''}>{tab.label}</span>
+                  <tab.icon className={`w-4 h-4 ${tab.id === 'recon' ? 'text-[var(--cyan-primary)]' : ''}`} />
+                  <span className={tab.id === 'recon' ? 'text-[var(--cyan-primary)]' : ''}>{tab.label}</span>
                 </button>
               ))}
             </div>
@@ -600,7 +596,7 @@ export default function Dashboard() {
                 <div className="px-3 pb-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="hud-text text-[9px] text-[var(--text-primary)]">
-                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'company' ? 'COMPANY INTEL' : mobilePanel === 'war_sim' ? 'WAR SIMULATOR' : 'SEARCH'}
+                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'company' ? 'COMPANY INTEL' : 'SEARCH'}
                     </span>
                     <button onClick={() => setMobilePanel(null)} className="text-[var(--text-muted)] p-1"><X className="w-4 h-4" /></button>
                   </div>
@@ -637,34 +633,6 @@ export default function Dashboard() {
                   {mobilePanel === 'company' && (
                     <div className="space-y-2">
                       <CompanyIntel isMobile={true} />
-                    </div>
-                  )}
-                  {mobilePanel === 'war_sim' && (
-                    <div className="space-y-2 flex flex-col items-center w-full">
-                      {!showWarSim ? (
-                        <>
-                          <button onClick={() => { setShowWarSim(true); }} className="w-full flex items-center justify-center gap-2 px-4 py-4 mt-2 bg-red-500/20 border border-red-500 text-red-400 font-mono tracking-widest font-bold rounded-lg uppercase shadow-[0_0_20px_rgba(255,0,0,0.4)]">
-                            <RadioTower className="w-5 h-5 animate-pulse" /> ENGAGE WAR SIMULATOR
-                          </button>
-                          <p className="text-[10px] text-[var(--text-muted)] font-mono text-center mt-2 px-4">
-                            Engaging the simulator activates the global DEFCON state and enables real-time kinetic OSINT mapping.
-                          </p>
-                        </>
-                      ) : (
-                        <div className="w-full">
-                          <button onClick={() => { setShowWarSim(false); }} className="w-full flex items-center justify-center gap-2 px-3 py-2 mb-2 bg-red-900/30 border border-red-900/50 text-red-500/80 hover:text-red-400 font-mono text-[10px] tracking-widest font-bold rounded">
-                            DISENGAGE
-                          </button>
-                          <WarSimulatorPanel 
-                            onClose={() => setMobilePanel(null)} 
-                            onLocate={(lat, lng) => { 
-                              setFlyToLocation({ lat, lng, ts: Date.now() }); 
-                              setMobilePanel(null); 
-                            }} 
-                            isMobile={true} 
-                          />
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
