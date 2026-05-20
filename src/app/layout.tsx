@@ -69,27 +69,23 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: "/favicon.svg", type: "image/svg+xml" },
-      { url: "/favicon-32.svg", type: "image/svg+xml", sizes: "16x16" },
-      { url: "/favicon-32.svg", type: "image/svg+xml", sizes: "32x32" },
-      { url: "/favicon-32.svg", type: "image/svg+xml", sizes: "96x96" },
-      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
-      { url: "/osiris-icon.png", type: "image/png", sizes: "512x512" },
+      { url: "/favicon-32x32.png", type: "image/png", sizes: "32x32" },
+      { url: "/favicon-16x16.png", type: "image/png", sizes: "16x16" },
+      { url: "/android-chrome-192x192.png", type: "image/png", sizes: "192x192" },
+      { url: "/android-chrome-512x512.png", type: "image/png", sizes: "512x512" },
     ],
     apple: [
-      { url: "/osiris-icon.png", sizes: "180x180" },
-      { url: "/osiris-icon.png", sizes: "152x152" },
-      { url: "/osiris-icon.png", sizes: "167x167" },
+      { url: "/apple-touch-icon.png", sizes: "180x180" },
     ],
-    shortcut: "/favicon.svg",
+    shortcut: "/favicon.ico",
     other: [
       {
         rel: "apple-touch-icon-precomposed",
-        url: "/osiris-icon.png",
+        url: "/apple-touch-icon.png",
       },
     ],
   },
-  manifest: "/manifest.json",
+  manifest: "/site.webmanifest",
   alternates: {
     canonical: SITE_URL,
   },
@@ -191,9 +187,10 @@ export default function RootLayout({
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-        <link rel="alternate icon" type="image/svg+xml" sizes="32x32" href="/favicon-32.svg" />
-        <link rel="apple-touch-icon" href="/osiris-icon.png" />
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <link rel="canonical" href={SITE_URL} />
         
         {/* JSON-LD Structured Data */}

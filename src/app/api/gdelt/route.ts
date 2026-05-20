@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * OSIRIS — Global Incidents API (GDELT Fallback / RSS OSINT Mapper)
  * Since GDELT v2 Geo is frequently down (404/Timeout), this fallback
