@@ -141,9 +141,10 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       attributionControl: false,
       maxPitch: 85,
       transformRequest: (url: string) => {
-        // Route all CARTO CDN requests through the Cloudflare edge worker
+        // Route all CARTO CDN requests through the internal Next.js proxy API
         if (url.includes('cartocdn.com')) {
-          return { url: url.replace('https://', 'https://osiris-tiles.soulsimplifai.workers.dev/') };
+          const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+          return { url: `${baseUrl}/api/proxy-tiles?url=${encodeURIComponent(url)}` };
         }
         return { url };
       },
