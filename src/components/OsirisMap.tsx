@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import type { EventBbox, IntelligenceFeatureCollection } from '@/lib/event-stream';
 
 interface OsirisMapProps {
   data: any;
@@ -11,12 +12,14 @@ interface OsirisMapProps {
   onMouseCoords?: (coords: { lat: number; lng: number }) => void;
   onRightClick?: (coords: { lat: number; lng: number }) => void;
   onViewStateChange?: (vs: { zoom: number; latitude: number; longitude: number }) => void;
+  onBoundsChange?: (bbox: EventBbox) => void;
   flyToLocation?: { lat: number; lng: number; ts: number } | null;
   projection?: 'mercator' | 'globe';
   mapStyle?: string;
   sweepData?: any;
   scanTargets?: any[];
   demoMode?: boolean;
+  intelligenceEvents?: IntelligenceFeatureCollection;
 }
 
 function computeSolarTerminator(): [number, number][] {
@@ -41,7 +44,17 @@ function computeSolarTerminator(): [number, number][] {
 
 const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] };
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, flyToLocation, projection = 'globe', mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false }: OsirisMapProps) {
+function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[char] || char));
+}
+
+function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onBoundsChange, flyToLocation, projection = 'globe', mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, intelligenceEvents = EMPTY_FC }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -168,6 +181,17 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       // Sources
       const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','gps-jamming','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','sigint-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'ioda-outages', 'malware-nodes', 'network-mesh'];
       sources.forEach(s => map.addSource(s, { type: 'geojson', data: EMPTY_FC }));
+      map.addSource('intelligence-events', {
+        type: 'geojson',
+        data: EMPTY_FC,
+        cluster: true,
+        clusterMaxZoom: 9,
+        clusterRadius: 46,
+        clusterProperties: {
+          max_score: ['max', ['coalesce', ['get', 'score'], 0]],
+          alert_count: ['+', ['case', ['to-boolean', ['get', 'alert']], 1, 0]],
+        },
+      });
 
       // Warning icon generator (parameterized — eliminates 3x copy-paste)
       const createWarningIcon = (id: string, color: string) => {
@@ -321,6 +345,59 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         'text-field': ['get','title'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
         'text-offset': [0, 2], 'text-max-width': 14, 'text-allow-overlap': false,
       }, paint: { 'text-color': '#E040FB', 'text-halo-color': '#000', 'text-halo-width': 1, 'text-opacity': 0.8 }});
+
+      // Core Brain intelligence stream — filtered client-side, rendered on GPU.
+      map.addLayer({ id: 'intel-event-cluster-glow', type: 'circle', source: 'intelligence-events', filter: ['has', 'point_count'], paint: {
+        'circle-radius': ['interpolate', ['linear'], ['get','point_count'], 10, 18, 100, 34, 1000, 58],
+        'circle-color': ['case', ['>', ['get','alert_count'], 0], '#FF3D3D', '#00E5FF'],
+        'circle-opacity': ['case', ['>', ['get','alert_count'], 0], 0.18, 0.1],
+        'circle-blur': 1,
+      }});
+      map.addLayer({ id: 'intel-event-clusters', type: 'circle', source: 'intelligence-events', filter: ['has', 'point_count'], paint: {
+        'circle-radius': ['interpolate', ['linear'], ['get','point_count'], 10, 8, 100, 16, 1000, 28],
+        'circle-color': ['case', ['>', ['get','alert_count'], 0], '#FF3D3D', ['>=', ['get','max_score'], 70], '#FF9500', '#00E5FF'],
+        'circle-opacity': 0.82,
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-opacity': 0.35,
+      }});
+      map.addLayer({ id: 'intel-event-cluster-count', type: 'symbol', source: 'intelligence-events', filter: ['has', 'point_count'], layout: {
+        'text-field': ['to-string', ['get','point_count_abbreviated']],
+        'text-size': ['interpolate', ['linear'], ['get','point_count'], 10, 10, 1000, 14],
+        'text-font': ['Open Sans Bold'],
+        'text-allow-overlap': true,
+      }, paint: {
+        'text-color': '#05070C',
+        'text-halo-color': 'rgba(255,255,255,0.45)',
+        'text-halo-width': 0.5,
+      }});
+      map.addLayer({ id: 'intel-event-glow', type: 'circle', source: 'intelligence-events', paint: {
+        'circle-radius': ['interpolate', ['linear'], ['coalesce', ['get','score'], 0], 20, 10, 70, 22, 100, 34],
+        'circle-color': ['match', ['get','event_type'], 'adsb','#00E5FF', 'ais','#4FC3F7', 'weather','#E040FB', 'quake','#FF9500', 'wildfire','#FF6B00', '#D4AF37'],
+        'circle-opacity': ['case', ['to-boolean', ['get','alert']], 0.22, 0.12],
+        'circle-blur': 1,
+      }, filter: ['!', ['has', 'point_count']]});
+      map.addLayer({ id: 'intel-event-points', type: 'circle', source: 'intelligence-events', paint: {
+        'circle-radius': ['interpolate', ['linear'], ['coalesce', ['get','score'], 0], 20, 4, 70, 7, 100, 11],
+        'circle-color': ['match', ['get','event_type'], 'adsb','#00E5FF', 'ais','#4FC3F7', 'weather','#E040FB', 'quake','#FF9500', 'wildfire','#FF6B00', '#D4AF37'],
+        'circle-opacity': 0.9,
+        'circle-stroke-width': ['case', ['to-boolean', ['get','alert']], 2.5, 1.5],
+        'circle-stroke-color': ['case', ['to-boolean', ['get','alert']], '#FF3D3D', '#FFFFFF'],
+        'circle-stroke-opacity': ['case', ['to-boolean', ['get','alert']], 0.9, 0.35],
+      }, filter: ['!', ['has', 'point_count']]});
+      map.addLayer({ id: 'intel-event-label', type: 'symbol', source: 'intelligence-events', minzoom: 4, layout: {
+        'text-field': ['concat', ['upcase', ['get','event_type']], ' ', ['to-string', ['get','score']]],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 4, 8, 9, 11],
+        'text-font': ['Open Sans Bold'],
+        'text-offset': [0, 1.6],
+        'text-max-width': 14,
+        'text-allow-overlap': false,
+      }, paint: {
+        'text-color': ['match', ['get','event_type'], 'adsb','#00E5FF', 'ais','#4FC3F7', 'weather','#E040FB', 'quake','#FF9500', 'wildfire','#FF6B00', '#D4AF37'],
+        'text-halo-color': '#000',
+        'text-halo-width': 1,
+        'text-opacity': 0.9,
+      }, filter: ['!', ['has', 'point_count']]});
 
       // Nuclear Infrastructure
       map.addLayer({ id: 'infra-glow', type: 'circle', source: 'infrastructure', paint: {
@@ -575,6 +652,13 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     map.on('moveend', () => {
       const c = map.getCenter();
       onViewStateChange?.({ zoom: map.getZoom(), latitude: c.lat, longitude: c.lng });
+      const bounds = map.getBounds();
+      onBoundsChange?.({
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth(),
+      });
     });
 
     // ── POPUP HELPER ──
@@ -615,6 +699,60 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       });
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    });
+
+    map.on('click', 'intel-event-clusters', e => {
+      if (!e.features?.length) return;
+      const feature = e.features[0];
+      const clusterId = Number(feature.properties?.cluster_id);
+      const source = map.getSource('intelligence-events') as maplibregl.GeoJSONSource;
+      const coords = (feature.geometry as any).coordinates;
+      if (!Number.isFinite(clusterId) || !source?.getClusterExpansionZoom) return;
+
+      void source.getClusterExpansionZoom(clusterId).then((zoom) => {
+        map.easeTo({
+          center: coords,
+          zoom: Math.min(zoom + 0.5, 14),
+          duration: 500,
+        });
+      }).catch(() => undefined);
+    });
+
+    map.on('click', 'intel-event-points', e => {
+      if (!e.features?.length) return;
+      const p = e.features[0].properties as any;
+      const coords = (e.features[0].geometry as any).coordinates;
+      const type = escapeHtml(p.event_type || 'event').toUpperCase();
+      const title = escapeHtml(p.title || 'Core Brain event');
+      const severity = escapeHtml(p.severity || 'INFO');
+      const score = escapeHtml(p.score ?? 0);
+      const risk = escapeHtml(p.risk ?? 0);
+      const confidence = escapeHtml(p.confidence ?? 0);
+      const source = escapeHtml(p.source || 'OSIRIS Core Brain');
+      const agentSummary = escapeHtml(p.agent_summary || '');
+      const agentReasoning = escapeHtml(p.agent_reasoning || '');
+      const color = p.alert ? '#FF3D3D' : '#00E5FF';
+      popup(coords, `<div style="${pStyle}border:1px solid ${color}66;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+          <span style="color:${color};font-size:12px;font-weight:700;letter-spacing:0.12em;">${type}</span>
+          <span style="color:#8A8880;font-size:9px;">${severity}</span>
+        </div>
+        <div style="font-size:10px;color:#E8E6E0;line-height:1.35;margin-bottom:10px;">${title}</div>
+        ${agentSummary ? `<div style="border:1px solid rgba(0,229,255,0.18);background:rgba(0,229,255,0.06);padding:8px;border-radius:6px;margin-bottom:10px;">
+          <div style="color:#00E5FF;font-size:8px;letter-spacing:0.14em;margin-bottom:4px;">AI SUMMARY</div>
+          <div style="font-size:9px;color:#E8E6E0;line-height:1.35;">${agentSummary}</div>
+          ${agentReasoning ? `<div style="font-size:8px;color:#8A8880;line-height:1.35;margin-top:5px;">${agentReasoning}</div>` : ''}
+        </div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:9px;">
+          <div><span style="color:#5C5A54;">SCORE</span><br/><span style="color:${color};font-weight:bold;">${score}</span></div>
+          <div><span style="color:#5C5A54;">RISK</span><br/><span style="color:#FF9500;">${risk}</span></div>
+          <div><span style="color:#5C5A54;">CONF</span><br/><span style="color:#00E5FF;">${confidence}%</span></div>
+          <div><span style="color:#5C5A54;">ANOM</span><br/><span style="color:#E8E6E0;">${escapeHtml(p.anomaly_count || 0)}</span></div>
+          <div><span style="color:#5C5A54;">CORR</span><br/><span style="color:#E8E6E0;">${escapeHtml(p.correlation_count || 0)}</span></div>
+          <div><span style="color:#5C5A54;">POS</span><br/><span style="color:#E8E6E0;">${coords[1].toFixed(2)},${coords[0].toFixed(2)}</span></div>
+        </div>
+        <div style="font-size:8px;color:#8A8880;margin-top:10px;overflow-wrap:anywhere;">${source}</div>
+      </div>`);
     });
 
     // ── CCTV (opens CameraViewer panel) ──
@@ -789,7 +927,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     });
 
     // ── Generic hover for clickables ──
-    ['conflict-icons','cctv-dots','eq-circles','sat-dots','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','sigint-news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','ioda-dots'].forEach(layer => {
+    ['conflict-icons','intel-event-clusters','intel-event-points','cctv-dots','eq-circles','sat-dots','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','sigint-news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','ioda-dots'].forEach(layer => {
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
     });
@@ -1036,6 +1174,12 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     if (!map) return;
     ids.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none'); });
   }, []);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const src = mapRef.current?.getSource('intelligence-events') as any;
+    if (src) src.setData(intelligenceEvents || EMPTY_FC);
+  }, [mapReady, intelligenceEvents]);
 
   // Flight data → GeoJSON (GPU rendered)
   useEffect(() => {

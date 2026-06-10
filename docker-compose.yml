@@ -86,6 +86,7 @@ services:
       - no-new-privileges:true
     networks:
       - edge
+      - backend
     logging: *common-logging
 
   osiris:
@@ -101,6 +102,8 @@ services:
         condition: service_healthy
       osiris-tracking:
         condition: service_healthy
+      osiris-core-brain:
+        condition: service_healthy
     expose:
       - "3000"
     environment:
@@ -111,6 +114,7 @@ services:
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-true}"
       REDIS_URL: "redis://osiris-redis:6379"
       INTEL_URL: "http://osiris-intel:4000"
+      CORE_BRAIN_URL: "http://osiris-core-brain:4400"
       TRACKING_URL: "http://osiris-tracking:4201"
       ADSB_URL: "http://osiris-tracking:4201/flights"
       AIS_URL: "http://osiris-tracking:4201/maritime"
@@ -322,6 +326,150 @@ services:
       - data
       - egress
 
+  osiris-brain:
+    <<: *node-runtime
+    image: "${OSIRIS_BRAIN_IMAGE:-osiris-brain:latest}"
+    build:
+      context: ./services/osiris-brain
+      dockerfile: Dockerfile
+    depends_on:
+      osiris-redis:
+        condition: service_healthy
+    expose:
+      - "4500"
+    environment:
+      NODE_ENV: "production"
+      PORT: "4500"
+      REDIS_URL: "redis://osiris-redis:6379"
+      SERVICE_NAME: "osiris-brain"
+      OSIRIS_BRAIN_ENABLED: "${OSIRIS_BRAIN_ENABLED:-true}"
+      OSIRIS_BRAIN_STREAM_KEY: "${EVENT_STREAM_KEY:-osiris.stream}"
+      OSIRIS_BRAIN_STREAM_MAXLEN: "${EVENT_STREAM_MAXLEN:-0}"
+      OSIRIS_BRAIN_FEEDS_JSON: "${OSIRIS_BRAIN_FEEDS_JSON:-}"
+      OSIRIS_BRAIN_FEEDS: "${OSIRIS_BRAIN_FEEDS:-}"
+      OSIRIS_BRAIN_TRACKING_URL: "${OSIRIS_BRAIN_TRACKING_URL:-http://osiris-tracking:4201/tracks?limit=10000&stale=false}"
+      OSIRIS_BRAIN_EARTHQUAKES_URL: "${OSIRIS_BRAIN_EARTHQUAKES_URL:-http://osiris:3000/api/earthquakes}"
+      OSIRIS_BRAIN_WILDFIRES_URL: "${OSIRIS_BRAIN_WILDFIRES_URL:-http://osiris:3000/api/fires}"
+      OSIRIS_BRAIN_WEATHER_URL: "${OSIRIS_BRAIN_WEATHER_URL:-http://osiris:3000/api/weather}"
+      OSIRIS_BRAIN_TRACKING_POLL_SECONDS: "${OSIRIS_BRAIN_TRACKING_POLL_SECONDS:-15}"
+      OSIRIS_BRAIN_EARTHQUAKES_POLL_SECONDS: "${OSIRIS_BRAIN_EARTHQUAKES_POLL_SECONDS:-60}"
+      OSIRIS_BRAIN_WILDFIRES_POLL_SECONDS: "${OSIRIS_BRAIN_WILDFIRES_POLL_SECONDS:-300}"
+      OSIRIS_BRAIN_WEATHER_POLL_SECONDS: "${OSIRIS_BRAIN_WEATHER_POLL_SECONDS:-120}"
+      OSIRIS_BRAIN_REQUEST_TIMEOUT_MS: "${OSIRIS_BRAIN_REQUEST_TIMEOUT_MS:-8000}"
+      OSIRIS_BRAIN_MAX_EVENTS_PER_POLL: "${OSIRIS_BRAIN_MAX_EVENTS_PER_POLL:-10000}"
+      OSIRIS_BRAIN_DEDUPE_TTL_MS: "${OSIRIS_BRAIN_DEDUPE_TTL_MS:-900000}"
+      OSIRIS_BRAIN_BACKPRESSURE_LENGTH: "${OSIRIS_BRAIN_BACKPRESSURE_LENGTH:-500000}"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4500/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: "${OSIRIS_BRAIN_MEM_LIMIT:-512m}"
+    cpus: "${OSIRIS_BRAIN_CPUS:-0.75}"
+    pids_limit: 192
+    networks:
+      - backend
+      - data
+      - egress
+
+  osiris-core-brain:
+    <<: *node-runtime
+    image: "${OSIRIS_CORE_BRAIN_IMAGE:-osiris-core-brain:latest}"
+    build:
+      context: ./services/core-brain
+      dockerfile: Dockerfile
+    depends_on:
+      osiris-redis:
+        condition: service_healthy
+      osiris-event-bus:
+        condition: service_healthy
+    expose:
+      - "4400"
+    environment:
+      NODE_ENV: "production"
+      PORT: "4400"
+      REDIS_URL: "redis://osiris-redis:6379"
+      MODULE_INTELLIGENCE_ENABLED: "${MODULE_INTELLIGENCE_ENABLED:-true}"
+      BRAIN_INPUT_STREAM: "${EVENT_STREAM_KEY:-osiris.stream}"
+      BRAIN_OUTPUT_STREAM: "${BRAIN_OUTPUT_STREAM:-osiris.intelligence}"
+      BRAIN_ALERT_STREAM: "${BRAIN_ALERT_STREAM:-osiris.intelligence.alerts}"
+      BRAIN_INSIGHT_STREAM: "${BRAIN_INSIGHT_STREAM:-osiris.insights}"
+      BRAIN_CONSUMER_GROUP: "${BRAIN_CONSUMER_GROUP:-osiris-core-brain}"
+      BRAIN_CONSUMER_NAME: "${BRAIN_CONSUMER_NAME:-core-brain-1}"
+      BRAIN_READ_COUNT: "${BRAIN_READ_COUNT:-100}"
+      BRAIN_BLOCK_MS: "${BRAIN_BLOCK_MS:-5000}"
+      BRAIN_MAX_RETRIES: "${BRAIN_MAX_RETRIES:-5}"
+      BRAIN_BACKPRESSURE_MAX_PENDING: "${BRAIN_BACKPRESSURE_MAX_PENDING:-50000}"
+      BRAIN_BACKPRESSURE_SLEEP_MS: "${BRAIN_BACKPRESSURE_SLEEP_MS:-500}"
+      BRAIN_ALERT_MIN_SCORE: "${BRAIN_ALERT_MIN_SCORE:-70}"
+      BRAIN_ALERT_MIN_RISK: "${BRAIN_ALERT_MIN_RISK:-60}"
+      BRAIN_ALERT_MIN_CONFIDENCE: "${BRAIN_ALERT_MIN_CONFIDENCE:-55}"
+      BRAIN_ENTITY_TTL_MS: "${BRAIN_ENTITY_TTL_MS:-1800000}"
+      BRAIN_HAZARD_TTL_MS: "${BRAIN_HAZARD_TTL_MS:-21600000}"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4400/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: "${CORE_BRAIN_MEM_LIMIT:-768m}"
+    cpus: "${CORE_BRAIN_CPUS:-1.00}"
+    pids_limit: 256
+    networks:
+      - backend
+      - data
+
+  osiris-agent:
+    <<: *node-runtime
+    image: "${OSIRIS_AGENT_IMAGE:-osiris-agent:latest}"
+    build:
+      context: ./services/osiris-agent
+      dockerfile: Dockerfile
+    depends_on:
+      osiris-redis:
+        condition: service_healthy
+    expose:
+      - "4600"
+    environment:
+      NODE_ENV: "production"
+      PORT: "4600"
+      REDIS_URL: "redis://osiris-redis:6379"
+      SERVICE_NAME: "osiris-agent"
+      OSIRIS_AGENT_ENABLED: "${OSIRIS_AGENT_ENABLED:-true}"
+      OSIRIS_AGENT_INPUT_STREAM: "${EVENT_STREAM_KEY:-osiris.stream}"
+      OSIRIS_AGENT_OUTPUT_STREAM: "${OSIRIS_AGENT_OUTPUT_STREAM:-osiris.insights}"
+      OSIRIS_AGENT_DLQ_STREAM: "${OSIRIS_AGENT_DLQ_STREAM:-osiris.insights.dlq}"
+      OSIRIS_AGENT_CONSUMER_GROUP: "${OSIRIS_AGENT_CONSUMER_GROUP:-osiris-agent}"
+      OSIRIS_AGENT_CONSUMER_NAME: "${OSIRIS_AGENT_CONSUMER_NAME:-osiris-agent-1}"
+      OSIRIS_AGENT_CONCURRENCY: "${OSIRIS_AGENT_CONCURRENCY:-8}"
+      OSIRIS_AGENT_READ_COUNT: "${OSIRIS_AGENT_READ_COUNT:-100}"
+      OSIRIS_AGENT_BLOCK_MS: "${OSIRIS_AGENT_BLOCK_MS:-5000}"
+      OSIRIS_AGENT_MAX_RETRIES: "${OSIRIS_AGENT_MAX_RETRIES:-5}"
+      OSIRIS_AGENT_MIN_INSIGHT_SCORE: "${OSIRIS_AGENT_MIN_INSIGHT_SCORE:-25}"
+      OSIRIS_AGENT_ALERT_MIN_SCORE: "${OSIRIS_AGENT_ALERT_MIN_SCORE:-75}"
+      OSIRIS_AGENT_BACKPRESSURE_MAX_PENDING: "${OSIRIS_AGENT_BACKPRESSURE_MAX_PENDING:-50000}"
+      OSIRIS_AGENT_CORRELATION_RADIUS_KM: "${OSIRIS_AGENT_CORRELATION_RADIUS_KM:-120}"
+      OSIRIS_AGENT_CORRELATION_WINDOW_MS: "${OSIRIS_AGENT_CORRELATION_WINDOW_MS:-3600000}"
+      OSIRIS_AGENT_OLLAMA_ENABLED: "${OSIRIS_AGENT_OLLAMA_ENABLED:-false}"
+      OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+      OSIRIS_AGENT_OLLAMA_TIMEOUT_MS: "${OSIRIS_AGENT_OLLAMA_TIMEOUT_MS:-2500}"
+      OSIRIS_AGENT_OLLAMA_MIN_SCORE: "${OSIRIS_AGENT_OLLAMA_MIN_SCORE:-55}"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4600/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: "${OSIRIS_AGENT_MEM_LIMIT:-512m}"
+    cpus: "${OSIRIS_AGENT_CPUS:-0.75}"
+    pids_limit: 192
+    networks:
+      - backend
+      - data
+      - egress
+
   osiris-earthquakes:
     <<: *module-runtime
     expose:
@@ -430,6 +578,12 @@ services:
         condition: service_started
       osiris-event-bus:
         condition: service_started
+      osiris-brain:
+        condition: service_started
+      osiris-core-brain:
+        condition: service_started
+      osiris-agent:
+        condition: service_started
       osiris-earthquakes:
         condition: service_started
       osiris-wildfires:
@@ -449,6 +603,9 @@ services:
         tracking|http://osiris-tracking:4201/ready;
         tracking-sources|http://osiris-tracking:4201/sources|optional;
         event-bus|http://osiris-event-bus:4300/ready;
+        brain-bridge|http://osiris-brain:4500/ready|optional;
+        core-brain|http://osiris-core-brain:4400/ready;
+        ai-agent|http://osiris-agent:4600/ready|optional;
         earthquakes|http://osiris-earthquakes:4103/health|optional;
         wildfires|http://osiris-wildfires:4104/health|optional;
         satellites|http://osiris-satellites:4105/health|optional;

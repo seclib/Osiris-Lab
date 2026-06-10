@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, useMemo, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Radar, Satellite, Moon, ExternalLink, AlertTriangle, Activity, Database, Wifi, Play, Network, SlidersHorizontal } from 'lucide-react';
@@ -15,10 +15,12 @@ import ViewPresets from '@/components/ViewPresets';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 import GlobalStatusBar from '@/components/GlobalStatusBar';
 import LiveAlerts from '@/components/LiveAlerts';
-import ModuleControlPanel from '@/components/ModuleControlPanel';
-import type { ModuleLayerState } from '@/lib/module-ui';
+import EventLayerRenderer from '@/components/realtime/EventLayerRenderer';
+import IntelligenceSidebar from '@/components/realtime/IntelligenceSidebar';
+import MapCanvas from '@/components/realtime/MapCanvas';
+import { DEFAULT_EVENT_FILTERS, filterIntelligenceEvents, type EventBbox } from '@/lib/event-stream';
+import { useCoreBrainStream } from '@/lib/use-core-brain-stream';
 
-const OsirisMap = dynamic(() => import('@/components/OsirisMap'), { ssr: false });
 const LayerPanel = dynamic(() => import('@/components/LayerPanel'));
 const CameraViewer = dynamic(() => import('@/components/CameraViewer'));
 const OsintPanel = dynamic(() => import('@/components/OsintPanel'));
@@ -92,6 +94,9 @@ export default function Dashboard() {
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [mapView, setMapView] = useState({ zoom: 6.5, latitude: 42.70, longitude: 25.48 });
   const [flyToLocation, setFlyToLocation] = useState<{ lat: number; lng: number; ts: number } | null>(null);
+  const [eventFilters, setEventFilters] = useState(DEFAULT_EVENT_FILTERS);
+  const [currentBbox, setCurrentBbox] = useState<EventBbox | null>(null);
+  const [eventFilterTick, setEventFilterTick] = useState(0);
   const [globalStats, setGlobalStats] = useState<any>(null);
   const mouseCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const coordsDisplayRef = useRef<HTMLDivElement>(null);
@@ -155,6 +160,24 @@ export default function Dashboard() {
   const [liveFeedUrl, setLiveFeedUrl] = useState<string | null>(null);
   const [liveFeedName, setLiveFeedName] = useState('');
   const [liveFeedEmbedAllowed, setLiveFeedEmbedAllowed] = useState(true);
+  const coreBrainStream = useCoreBrainStream({ maxEvents: 2000, flushMs: 250 });
+
+  useEffect(() => {
+    const timer = setInterval(() => setEventFilterTick((value) => value + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const filteredCoreEvents = useMemo(
+    () => {
+      void eventFilterTick;
+      return filterIntelligenceEvents(coreBrainStream.events, eventFilters);
+    },
+    [coreBrainStream.events, eventFilters, eventFilterTick],
+  );
+
+  const handleBoundsChange = useCallback((bbox: EventBbox) => {
+    setCurrentBbox(bbox);
+  }, []);
 
   // Splash screen
   useEffect(() => {
@@ -748,20 +771,26 @@ export default function Dashboard() {
 
       {/* ── MAP ── */}
       <ErrorBoundary name="Map">
-        <OsirisMap 
-          data={data} 
-          activeLayers={activeLayers} 
-          projection={mapProjection} 
-          mapStyle={mapStyle === 'satellite' ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : 'dark'} 
-          onEntityClick={handleEntityClick} 
-          onMouseCoords={handleMouseCoords} 
-          onRightClick={handleRightClick} 
-          onViewStateChange={setMapView} 
-          flyToLocation={flyToLocation}
-          sweepData={sweepData}
-          scanTargets={scanTargets}
-          demoMode={demoMode}
-        />
+        <EventLayerRenderer events={filteredCoreEvents} maxFeatures={2000} fps={18}>
+          {(intelligenceEventFeatures) => (
+            <MapCanvas
+              data={data}
+              activeLayers={activeLayers}
+              projection={mapProjection}
+              mapStyle={mapStyle === 'satellite' ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : 'dark'}
+              onEntityClick={handleEntityClick}
+              onMouseCoords={handleMouseCoords}
+              onRightClick={handleRightClick}
+              onViewStateChange={setMapView}
+              onBoundsChange={handleBoundsChange}
+              flyToLocation={flyToLocation}
+              sweepData={sweepData}
+              scanTargets={scanTargets}
+              demoMode={demoMode}
+              intelligenceEvents={intelligenceEventFeatures}
+            />
+          )}
+        </EventLayerRenderer>
       </ErrorBoundary>
 
 
@@ -825,6 +854,7 @@ export default function Dashboard() {
         </span>
 
         <span className="flex items-center gap-1">SYS: <span className={backendStatus === 'connected' ? 'text-[var(--alert-green)]' : 'text-[var(--alert-red)]'}>{backendStatus.toUpperCase()}</span></span>
+        <span className="hidden lg:inline-flex items-center gap-1">BRAIN: <span className={coreBrainStream.status === 'connected' ? 'text-[var(--alert-green)]' : coreBrainStream.status === 'error' ? 'text-[var(--alert-red)]' : 'text-[var(--gold-primary)]'}>{coreBrainStream.status.toUpperCase()}</span></span>
 
         {spaceWeather && <span className="hidden lg:inline">SOLAR: <span style={{ color: spaceWeather.storm_color, fontWeight: 700 }}>Kp{spaceWeather.kp_index}</span></span>}
 
@@ -906,20 +936,22 @@ export default function Dashboard() {
           <button
             onClick={() => { setShowModules(!showModules); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowEntityGraph(false); }}
             className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${showModules ? 'bg-[var(--gold-primary)]/20' : 'hover:bg-white/10'}`}
-            title="Module controls"
+            title="Event filters"
           >
             <SlidersHorizontal className={`w-4 h-4 ${showModules ? 'text-[var(--gold-primary)]' : 'text-white/60'}`} />
           </button>
           <AnimatePresence>
             {showModules && (
               <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute right-12 top-1/2 -translate-y-1/2">
-                <ModuleControlPanel
-                  activeLayers={activeLayers}
-                  setActiveLayers={setActiveLayers as Dispatch<SetStateAction<ModuleLayerState>>}
-                  onOpenIntel={() => {
-                    setShowIntel(true);
-                    setShowModules(false);
-                  }}
+                <IntelligenceSidebar
+                  events={coreBrainStream.events}
+                  filteredEvents={filteredCoreEvents}
+                  filters={eventFilters}
+                  setFilters={setEventFilters}
+                  streamStatus={coreBrainStream.status}
+                  streamStats={coreBrainStream.stats}
+                  currentBbox={currentBbox}
+                  onLocate={(lat, lng) => setFlyToLocation({ lat, lng, ts: Date.now() })}
                 />
               </motion.div>
             )}
@@ -1033,7 +1065,7 @@ export default function Dashboard() {
                 { id: 'markets' as const, icon: BarChart3, label: 'MARKETS' },
                 { id: 'intel' as const, icon: Newspaper, label: 'INTEL' },
                 { id: 'recon' as const, icon: Radar, label: 'RECON' },
-                { id: 'ops' as const, icon: SlidersHorizontal, label: 'OPS' },
+                { id: 'ops' as const, icon: SlidersHorizontal, label: 'EVENTS' },
                 { id: 'search' as const, icon: Search, label: 'SEARCH' },
               ].map(tab => (
                 <button key={tab.id} onClick={() => setMobilePanel(mobilePanel === tab.id ? null : tab.id)}
@@ -1058,7 +1090,7 @@ export default function Dashboard() {
                 <div className="px-3 pb-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="hud-text text-[9px] text-[var(--text-primary)]">
-                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'ops' ? 'MODULE OPS' : 'SEARCH'}
+                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'ops' ? 'EVENT FILTERS' : 'SEARCH'}
                     </span>
                     <button onClick={() => setMobilePanel(null)} className="text-[var(--text-muted)] p-1"><X className="w-4 h-4" /></button>
                   </div>
@@ -1082,11 +1114,19 @@ export default function Dashboard() {
                   {mobilePanel === 'markets' && <MarketsPanel data={data} spaceWeather={spaceWeather} />}
                   {mobilePanel === 'intel' && <IntelFeed data={data} onLocate={(lat, lng) => { setFlyToLocation({ lat, lng, ts: Date.now() }); setMobilePanel(null); }} />}
                   {mobilePanel === 'ops' && (
-                    <ModuleControlPanel
-                      activeLayers={activeLayers}
-                      setActiveLayers={setActiveLayers as Dispatch<SetStateAction<ModuleLayerState>>}
+                    <IntelligenceSidebar
+                      events={coreBrainStream.events}
+                      filteredEvents={filteredCoreEvents}
+                      filters={eventFilters}
+                      setFilters={setEventFilters}
+                      streamStatus={coreBrainStream.status}
+                      streamStats={coreBrainStream.stats}
+                      currentBbox={currentBbox}
                       isMobile={true}
-                      onOpenIntel={() => setMobilePanel('intel')}
+                      onLocate={(lat, lng) => {
+                        setFlyToLocation({ lat, lng, ts: Date.now() });
+                        setMobilePanel(null);
+                      }}
                     />
                   )}
                   {mobilePanel === 'search' && (

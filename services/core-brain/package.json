@@ -1,0 +1,19 @@
+{
+  "name": "@osiris/core-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OSIRIS Core Brain real-time event processor, anomaly detector, correlator, scorer, and WebSocket broadcaster",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/logger.js && node --check src/event-codec.js && node --check src/geo.js && node --check src/state-store.js && node --check src/event-normalizer.js && node --check src/anomaly-engine.js && node --check src/anomaly-detector.js && node --check src/correlation-engine.js && node --check src/scoring.js && node --check src/scoring-engine.js && node --check src/insight-agent.js && node --check src/ai-agent-bridge.js && node --check src/brain-bus.js && node --check src/stream-consumer.js && node --check src/ws-hub.js && node --check src/websocket-gateway.js && node --check src/processor.js && node --check src/server.js"
+  },
+  "dependencies": {
+    "redis": "^4.7.0",
+    "ws": "^8.18.0"
+  }
+}
