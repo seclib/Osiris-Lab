@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { isRateLimited, getClientIp } from '@/lib/ssrf-guard';
+import { isRateLimited } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
 import { search, type Schema } from '@/lib/sanctions';
 
 // Standalone OFAC SDN search (free, no key) backed by the OpenSanctions

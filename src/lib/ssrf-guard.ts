@@ -213,26 +213,3 @@ export async function safeFetch(
   }
   throw new Error('safeFetch: too many redirects');
 }
-
-// ── SHARED RATE LIMITER ──
-// In-memory rate limiting per-isolate for basic proxy abuse prevention
-const rateMap = new Map<string, { count: number; resetAt: number }>();
-
-export function isRateLimited(ip: string, limit: number = 20, windowMs: number = 60_000): boolean {
-  const now = Date.now();
-  for (const [key, entry] of rateMap) {
-    if (now > entry.resetAt) rateMap.delete(key);
-  }
-  const entry = rateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateMap.set(ip, { count: 1, resetAt: now + windowMs });
-    return false;
-  }
-  entry.count++;
-  return entry.count > limit;
-}
-
-export function getClientIp(req: Request): string {
-  const forwarded = req.headers.get('x-forwarded-for');
-  return forwarded?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || 'unknown';
-}

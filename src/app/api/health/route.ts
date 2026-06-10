@@ -9,6 +9,9 @@ export async function GET() {
     timestamp: new Date().toISOString(),
     endpoints: [
       '/api/flights',
+      '/api/modules',
+      '/api/modules/diagnose',
+      '/api/modules/verify',
       '/api/satellites',
       '/api/earthquakes',
       '/api/news',

@@ -1,6 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Flight Data API
@@ -53,6 +54,29 @@ const MILITARY_INDICATORS = new Set([
 ]);
 
 const AIRLINE_CODE_RE = /^([A-Z]{3})\d/;
+const TRACKING_URL = (process.env.TRACKING_URL || process.env.OSIRIS_TRACKING_URL || '').replace(/\/$/, '');
+const LEGACY_FLIGHT_INGEST = process.env.OSIRIS_ENABLE_LEGACY_FLIGHT_INGEST === 'true';
+
+async function fetchTrackingFlights() {
+  if (!TRACKING_URL) return null;
+
+  try {
+    const res = await fetch(`${TRACKING_URL}/flights?stale=false&limit=5000`, {
+      signal: AbortSignal.timeout(5000),
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'OSIRIS-UI/1.0',
+      },
+    });
+
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (error) {
+    console.warn('Tracking flight fetch failed:', error);
+    return null;
+  }
+}
 
 async function fetchRegion(region: typeof REGIONS[0]): Promise<any[]> {
   try {
@@ -136,6 +160,45 @@ const CACHE_TTL = 45000; // 45 seconds cache window
 let fetchPromise: Promise<any> | null = null;
 
 export async function GET() {
+  const moduleState = await getModuleState('adsb');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('adsb', {
+      commercial_flights: [],
+      private_flights: [],
+      private_jets: [],
+      military_flights: [],
+      gps_jamming: [],
+      total: 0,
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
+  const trackingData = await fetchTrackingFlights();
+  if (trackingData) {
+    return NextResponse.json(trackingData, {
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+    });
+  }
+
+  if (!LEGACY_FLIGHT_INGEST) {
+    return NextResponse.json({
+      commercial_flights: [],
+      private_flights: [],
+      private_jets: [],
+      military_flights: [],
+      gps_jamming: [],
+      total: 0,
+      degraded: true,
+      error: TRACKING_URL ? 'tracking_service_unavailable' : 'tracking_service_not_configured',
+      source: 'osiris-tracking',
+      timestamp: new Date().toISOString(),
+    }, {
+      status: 503,
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+    });
+  }
+
   const now = Date.now();
 
   // Return cached data if within TTL

@@ -1,5 +1,6 @@
 
 import { NextResponse } from 'next/server';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +10,17 @@ export const dynamic = 'force-dynamic';
  */
 
 export async function GET() {
+  const moduleState = await getModuleState('wildfires');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('wildfires', {
+      fires: [],
+      total: 0,
+      source: 'module-disabled',
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     let fires: any[] = [];
     let source = '';

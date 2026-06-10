@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
+const GDELT_QUERY_TIMEOUT_MS = 4000;
+const GDELT_BUDGET_MS = 9000;
 
 /**
  * OSIRIS — Real-Time Geopolitical Events (GDELT 2.0 GeoJSON API)
@@ -19,13 +21,17 @@ export async function GET() {
     
     const allEvents: any[] = [];
     let eventId = 0;
+    const deadline = Date.now() + GDELT_BUDGET_MS;
 
     for (const query of queries) {
+      if (Date.now() >= deadline) break;
       try {
         const encodedQuery = encodeURIComponent(query);
         const url = `https://api.gdeltproject.org/api/v2/geo/geo?query=${encodedQuery}&format=GeoJSON&timespan=24h&maxpoints=100`;
         
-        const res = await fetch(url, { signal: AbortSignal.timeout(10000), cache: 'no-store' });
+        const remaining = Math.max(deadline - Date.now(), 1000);
+        const timeoutMs = Math.min(GDELT_QUERY_TIMEOUT_MS, remaining);
+        const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
         if (!res.ok) continue;
 
         const geojson = await res.json();

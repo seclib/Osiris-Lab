@@ -1,5 +1,6 @@
 # Dependencies
 /node_modules
+**/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -23,9 +24,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Local env files
-.env*.local
+# env
 .env
+.env.*
+!.env.example
 
 # Vercel
 .vercel
@@ -44,3 +46,29 @@ scanner_backend_backup.js
 # Security - Prevent accidental manual leaks
 *Manual*.md
 
+# docker
+**/volumes/
+**/data/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# AI models (ollama etc.)
+*.gguf
+*.bin
+models/
+
+# dependencies
+node_modules/
+**/node_modules/
+
+# logs
+*.log
+logs/
+
+# runtime
+dist/
+build/
+.next/

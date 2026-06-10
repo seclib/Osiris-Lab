@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 import { fetchAsfinagCameras } from './asfinag';
 import { fetchBulgariaCameras } from './bulgaria';
 import { fetchGreeceCameras } from './greece';
@@ -415,6 +416,18 @@ function getRegionsForBounds(lat: number, lng: number, radius: number): string[]
 }
 
 export async function GET(request: Request) {
+  const moduleState = await getModuleState('cctv');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('cctv', {
+      cameras: [],
+      total: 0,
+      sources: {},
+      regions: [],
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const region = searchParams.get('region');
@@ -431,8 +444,9 @@ export async function GET(request: Request) {
     } else if (lat !== 0 || lng !== 0) {
       regionsToFetch = getRegionsForBounds(lat, lng, radius);
     } else {
-      // Default: load all regions for global coverage
-      regionsToFetch = Object.keys(REGION_FETCHERS);
+      // Default to the initial map viewport. Global CCTV fan-out is intentionally
+      // opt-in via ?region=all because several public providers are slow/flaky.
+      regionsToFetch = getRegionsForBounds(42.70, 25.48, 8);
     }
 
     const results = await Promise.allSettled(

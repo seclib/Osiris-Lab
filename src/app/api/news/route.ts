@@ -1,18 +1,18 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Military-Grade Intelligence API
- * Fetches Telegram OSINT feeds directly, with a failsafe fallback 
- * to traditional intelligence sources if Telegram blocks the IP.
+ * Fetches public RSS/official intelligence feeds by default.
+ * Telegram web scraping is disabled unless explicitly enabled by config.
  */
 
-const TELEGRAM_CHANNELS = [
-  'OSINTtechnical',
-  'Faytuks',
-  'Liveuamap',
-  'CyberKnow'
-];
+const TELEGRAM_CHANNELS = (process.env.OSIRIS_TELEGRAM_CHANNELS || '')
+  .split(',')
+  .map(channel => channel.trim())
+  .filter(Boolean);
+const ENABLE_TELEGRAM_SCRAPE = process.env.OSIRIS_ENABLE_TELEGRAM_SCRAPE === 'true';
 
 const FALLBACK_FEEDS = {
   BBC: 'https://feeds.bbci.co.uk/news/world/rss.xml',
@@ -28,6 +28,14 @@ const KEYWORD_COORDS: Record<string, [number, number]> = {
   'iran': [32.427, 53.688], 'lebanon': [33.854, 35.862], 'syria': [34.802, 38.996],
   'yemen': [15.552, 48.516], 'china': [35.861, 104.195], 'taiwan': [23.697, 120.960],
   'united states': [38.907, -77.036], 'europe': [48.800, 2.300], 'middle east': [31.500, 34.800]
+};
+
+type NewsArticle = {
+  title: string;
+  description: string;
+  link: string;
+  pubDate: string;
+  source: string;
 };
 
 function scoreRisk(text: string): number {
@@ -47,8 +55,8 @@ function findCoords(text: string): [number, number] | null {
   return null;
 }
 
-function parseTelegramHTML(html: string, channel: string): any[] {
-  const items: any[] = [];
+function parseTelegramHTML(html: string, channel: string): NewsArticle[] {
+  const items: NewsArticle[] = [];
   const messageBlockRegex = /<div class="tgme_widget_message_wrap js-widget_message_wrap"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi;
   let blockMatch;
 
@@ -73,8 +81,8 @@ function parseTelegramHTML(html: string, channel: string): any[] {
   return items;
 }
 
-function parseRSSItems(xml: string, sourceName: string): any[] {
-  const items: any[] = [];
+function parseRSSItems(xml: string, sourceName: string): NewsArticle[] {
+  const items: NewsArticle[] = [];
   const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
   let match;
 
@@ -100,39 +108,53 @@ function parseRSSItems(xml: string, sourceName: string): any[] {
 }
 
 export async function GET() {
+  const moduleState = await getModuleState('news');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('news', {
+      news: [],
+      total: 0,
+      providers: {
+        rss: [],
+        telegram_scrape_enabled: false,
+        telegram_channels: [],
+      },
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
-    const feedPromises = TELEGRAM_CHANNELS.map(async (channel) => {
+    const allArticles: NewsArticle[] = [];
+
+    const rssPromises = Object.entries(FALLBACK_FEEDS).map(async ([source, url]) => {
       try {
-        const res = await fetch(`https://t.me/s/${channel}`, { 
-          signal: AbortSignal.timeout(8000), 
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' } 
-        });
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
         if (!res.ok) return [];
-        const html = await res.text();
-        return parseTelegramHTML(html, channel).slice(-8);
+        const xml = await res.text();
+        return parseRSSItems(xml, source).slice(0, 8);
       } catch { return []; }
     });
 
-    const feedResults = await Promise.allSettled(feedPromises);
-    const allArticles: any[] = [];
-
-    for (const result of feedResults) {
+    const rssResults = await Promise.allSettled(rssPromises);
+    for (const result of rssResults) {
       if (result.status === 'fulfilled') allArticles.push(...result.value);
     }
 
-    // FAILSAFE: If Telegram completely blocks the IP, fall back to traditional RSS
-    if (allArticles.length === 0) {
-      const fallbackPromises = Object.entries(FALLBACK_FEEDS).map(async ([source, url]) => {
+    if (ENABLE_TELEGRAM_SCRAPE && TELEGRAM_CHANNELS.length > 0) {
+      const telegramPromises = TELEGRAM_CHANNELS.map(async (channel) => {
         try {
-          const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+          const res = await fetch(`https://t.me/s/${channel}`, {
+            signal: AbortSignal.timeout(8000),
+            headers: { 'User-Agent': 'OSIRIS-News-Monitor/1.0' }
+          });
           if (!res.ok) return [];
-          const xml = await res.text();
-          return parseRSSItems(xml, source).slice(0, 5);
+          const html = await res.text();
+          return parseTelegramHTML(html, channel).slice(-8);
         } catch { return []; }
       });
-      
-      const fallbackResults = await Promise.allSettled(fallbackPromises);
-      for (const result of fallbackResults) {
+
+      const telegramResults = await Promise.allSettled(telegramPromises);
+      for (const result of telegramResults) {
         if (result.status === 'fulfilled') allArticles.push(...result.value);
       }
     }
@@ -160,13 +182,18 @@ export async function GET() {
     return NextResponse.json({
       news: newsItems,
       total: newsItems.length,
+      providers: {
+        rss: Object.keys(FALLBACK_FEEDS),
+        telegram_scrape_enabled: ENABLE_TELEGRAM_SCRAPE,
+        telegram_channels: ENABLE_TELEGRAM_SCRAPE ? TELEGRAM_CHANNELS : [],
+      },
       timestamp: new Date().toISOString(),
     }, {
       headers: {
         'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120',
       },
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ news: [], error: 'Failed to fetch intel' }, { status: 500 });
   }
 }

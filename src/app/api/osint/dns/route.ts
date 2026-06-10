@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { isRateLimited, getClientIp } from '@/lib/ssrf-guard';
+import { isRateLimited } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
 
 // DNS Lookup via Google DNS-over-HTTPS (free, no key)
 export async function GET(req: Request) {

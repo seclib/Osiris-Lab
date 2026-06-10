@@ -13,48 +13,17 @@ import {
   analyzeIntelligence,
   type IntelligenceContext,
 } from '@/lib/ai-engine';
+import { createFixedWindowRateLimiter } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
 
 export const dynamic = 'force-dynamic';
 
-/* ─────────────────────────────────────────────────────────────
-   Rate Limiter — 5 requests per minute per IP
-   ───────────────────────────────────────────────────────────── */
-
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-
-function checkRateLimit(ip: string): { allowed: boolean; remaining: number; resetIn: number } {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return { allowed: true, remaining: RATE_LIMIT_MAX - 1, resetIn: RATE_LIMIT_WINDOW_MS };
-  }
-
-  if (entry.count >= RATE_LIMIT_MAX) {
-    return { allowed: false, remaining: 0, resetIn: entry.resetAt - now };
-  }
-
-  entry.count++;
-  return { allowed: true, remaining: RATE_LIMIT_MAX - entry.count, resetIn: entry.resetAt - now };
-}
-
-// Periodic cleanup to prevent memory leaks
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitMap.entries()) {
-    if (now > entry.resetAt) {
-      rateLimitMap.delete(ip);
-    }
-  }
-}, 120_000);
+const aiRateLimiter = createFixedWindowRateLimiter({
+  limit: RATE_LIMIT_MAX,
+  windowMs: RATE_LIMIT_WINDOW_MS,
+});
 
 /* ─────────────────────────────────────────────────────────────
    Collect API keys from environment
@@ -99,14 +68,7 @@ interface ErrorResponse {
 export async function POST(
   request: NextRequest
 ): Promise<NextResponse<AnalyzeResponse | ErrorResponse>> {
-  // Extract client IP
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
-
-  // Rate limit check
-  const rateCheck = checkRateLimit(ip);
+  const rateCheck = aiRateLimiter.check(getClientIp(request));
   if (!rateCheck.allowed) {
     return NextResponse.json(
       {

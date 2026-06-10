@@ -16,6 +16,7 @@
  */
 
 const express = require('express');
+const { isIP } = require('node:net');
 const app = express();
 const PORT = process.env.INTEL_PORT || 4000;
 
@@ -235,6 +236,35 @@ function dedup(nodes, links) {
     if (!lSeen.has(k)) { lSeen.add(k); uLinks.push(l); }
   }
   return { nodes: uNodes, links: uLinks };
+}
+
+function rootNodeFor(type, id) {
+  return {
+    id: `${type}:${id}`,
+    label: id,
+    type,
+    properties: { source: 'request' },
+  };
+}
+
+function normalizeGraphResult(type, id, result) {
+  const rootId = `${type}:${id}`;
+  const rawNodes = Array.isArray(result?.nodes) ? result.nodes : [];
+  const rawLinks = Array.isArray(result?.links) ? result.links : [];
+  const nodes = rawNodes.some(n => n?.id === rootId)
+    ? rawNodes
+    : [rootNodeFor(type, id), ...rawNodes];
+
+  const nodeIds = new Set(nodes.map(n => n.id));
+  const links = rawLinks.filter(l => nodeIds.has(l?.source) && nodeIds.has(l?.target));
+  return dedup(nodes, links);
+}
+
+function validateResolveInput(type, id) {
+  if (type === 'ip' && !isIP(id)) {
+    return 'Invalid IP address';
+  }
+  return null;
 }
 
 async function resolveAircraft(id, properties = {}) {
@@ -729,8 +759,10 @@ app.get('/resolve', async (req, res) => {
     return res.status(400).json({ error: 'Invalid id (2-200 chars)' });
   }
 
-  const id = sanitizeId(rawId);
+  const id = type === 'ip' ? rawId : sanitizeId(rawId);
   if (id.length < 2) return res.status(400).json({ error: 'ID contains too many invalid characters' });
+  const validationError = validateResolveInput(type, id);
+  if (validationError) return res.status(400).json({ error: validationError });
 
   try {
     const resolver = RESOLVERS[type];
@@ -739,7 +771,7 @@ app.get('/resolve', async (req, res) => {
     if (req.query.registration) props.registration = sanitizeId(req.query.registration);
     if (req.query.model) props.model = sanitizeId(req.query.model);
     if (req.query.icao24) props.icao24 = sanitizeId(req.query.icao24);
-    const result = await resolver(id, props);
+    const result = normalizeGraphResult(type, id, await resolver(id, props));
     res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=7200');
     res.json({
       nodes: result.nodes,

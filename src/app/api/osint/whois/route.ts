@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { safeFetch, isRateLimited, getClientIp } from '@/lib/ssrf-guard';
+import { isRateLimited } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
+import { safeFetch } from '@/lib/ssrf-guard';
 import { matchExact, type SanctionEntry } from '@/lib/sanctions';
 
 // WHOIS + Domain Intelligence via RDAP (free, standardized).

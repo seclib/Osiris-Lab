@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import WebSocket from 'ws';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Maritime Intelligence
@@ -79,13 +80,38 @@ const CHOKEPOINTS = [
   { name: 'Lombok Strait', lat: -8.47, lng: 115.72, traffic: 'Alt Malacca', risk: 'LOW' },
 ];
 
+const TRACKING_URL = (process.env.TRACKING_URL || process.env.OSIRIS_TRACKING_URL || '').replace(/\/$/, '');
+const LEGACY_MARITIME_INGEST = process.env.OSIRIS_ENABLE_LEGACY_MARITIME_INGEST === 'true';
+
 // --- Global AIS Stream Client (In-Memory Cache) ---
 // Note: In a true serverless environment, this state would reset per invocation.
 // For Next.js dev server or Node.js Docker container, this will persist.
 
+type ShipRecord = {
+  id: number;
+  mmsi: number;
+  lat?: number;
+  lng?: number;
+  speed?: number;
+  heading?: number;
+  timestamp: number;
+  type?: string;
+  name?: string;
+  destination?: string;
+  flag?: string;
+};
+
+type PositionedShipRecord = ShipRecord & { lat: number; lng: number };
+
 const globalForAis = globalThis as unknown as {
-  shipsCache: Map<number, any>;
+  shipsCache: Map<number, ShipRecord>;
   isAisConnecting: boolean;
+  lastAisConnectedAt?: number;
+  lastAisMessageAt?: number;
+  lastAisError?: string;
+  vesselApiStatus?: string;
+  vesselApiLastSuccessAt?: number;
+  vesselApiLastError?: string;
 };
 
 if (!globalForAis.shipsCache) {
@@ -107,11 +133,14 @@ function connectAisStream() {
     ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
   } catch (e) {
     globalForAis.isAisConnecting = false;
+    globalForAis.lastAisError = e instanceof Error ? e.message : String(e);
     return;
   }
 
   ws.on("open", () => {
     globalForAis.isAisConnecting = false;
+    globalForAis.lastAisConnectedAt = Date.now();
+    globalForAis.lastAisError = undefined;
     const subscriptionMessage = {
       APIKey: apiKey,
       // Target specific high-value SCM areas to ensure data delivery on free tier
@@ -153,9 +182,17 @@ function connectAisStream() {
 
   ws.on("message", (data) => {
     try {
-      const parsed = JSON.parse(data.toString());
+      const parsed = JSON.parse(data.toString()) as {
+        MetaData?: { MMSI?: number; ShipName?: string };
+        MessageType?: string;
+        Message?: {
+          PositionReport?: { Latitude?: number; Longitude?: number; Sog?: number; TrueHeading?: number; Cog?: number };
+          ShipStaticData?: { Name?: string; Destination?: string; Type?: number };
+        };
+      };
       const mmsi = parsed.MetaData?.MMSI;
       if (!mmsi) return;
+      globalForAis.lastAisMessageAt = Date.now();
 
       const existing = shipsCache.get(mmsi) || {
         id: mmsi, mmsi: mmsi, timestamp: Date.now()
@@ -178,7 +215,7 @@ function connectAisStream() {
         const staticData = parsed.Message.ShipStaticData;
         existing.name = staticData.Name ? staticData.Name.trim() : existing.name;
         existing.destination = staticData.Destination ? staticData.Destination.trim() : existing.destination;
-        existing.type = getOsirisShipType(staticData.Type);
+        existing.type = getOsirisShipType(staticData.Type ?? 0);
       }
 
       // Only store if we have coordinates
@@ -191,88 +228,313 @@ function connectAisStream() {
         const firstKey = shipsCache.keys().next().value;
         if (firstKey) shipsCache.delete(firstKey);
       }
-    } catch (e) {
+    } catch {
       // ignore parse errors
     }
   });
 
   ws.on("close", () => {
     globalForAis.isAisConnecting = false;
+    globalForAis.lastAisError = 'aisstream_closed';
     setTimeout(connectAisStream, 5000); // Reconnect
   });
 
-  ws.on("error", () => {
+  ws.on("error", (error) => {
+    globalForAis.lastAisError = error instanceof Error ? error.message : 'aisstream_error';
     ws.close();
   });
 }
 
-// Start connection process asynchronously
-connectAisStream();
+// Legacy direct AIS ingestion is retained only as an explicit break-glass fallback.
+if (LEGACY_MARITIME_INGEST) {
+  connectAisStream();
+}
 
-// --- SCM Integration: VesselAPI Hybrid Fallback (Satellite AIS) ---
+// --- Optional licensed satellite/terrestrial AIS REST fallback ---
 let lastVesselApiFetch = 0;
+
+function toNumber(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractVesselRows(payload: unknown): Record<string, unknown>[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const candidate = payload as Record<string, unknown>;
+  if (Array.isArray(payload)) return payload as Record<string, unknown>[];
+  if (Array.isArray(candidate.vessels)) return candidate.vessels as Record<string, unknown>[];
+  if (Array.isArray(candidate.ships)) return candidate.ships as Record<string, unknown>[];
+  if (Array.isArray(candidate.data)) return candidate.data as Record<string, unknown>[];
+  if (Array.isArray(candidate.results)) return candidate.results as Record<string, unknown>[];
+  return [];
+}
+
 async function fetchVesselApiFallback() {
   const apiKey = process.env.VESSEL_API_KEY;
-  if (!apiKey) return;
+  const providerUrl = process.env.VESSEL_API_URL;
+  if (!apiKey || !providerUrl) {
+    globalForAis.vesselApiStatus = apiKey ? 'missing_vessel_api_url' : 'not_configured';
+    return;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(providerUrl);
+    if (url.protocol !== 'https:') {
+      globalForAis.vesselApiStatus = 'invalid_url';
+      globalForAis.vesselApiLastError = 'VESSEL_API_URL must use https';
+      return;
+    }
+  } catch {
+    globalForAis.vesselApiStatus = 'invalid_url';
+    globalForAis.vesselApiLastError = 'VESSEL_API_URL is not a valid URL';
+    return;
+  }
+
   const now = Date.now();
   if (now - lastVesselApiFetch < 60000) return; // Poll every 60s max
   lastVesselApiFetch = now;
 
   try {
-    // In a real production scenario, this makes a REST request to VesselAPI bounding box endpoint:
-    // const res = await fetch(`https://api.vesselapi.com/v1/tracking?bbox=...`, { headers: { Authorization: `Bearer ${apiKey}` } });
-    
-    // For this simulation, since we are authenticating successfully, we inject realistic satellite AIS data
-    // into the known blind spots (Hormuz and Suez) that aisstream.io cannot cover.
-    
-    const ghostShips = [];
-    const numHormuz = Math.floor(Math.random() * 20) + 45; // 45-65 ships (Trigger CRITICAL)
-    const numSuez = Math.floor(Math.random() * 15) + 30; // 30-45 ships (Trigger HIGH/CRITICAL)
-    
-    // Generate Hormuz
-    for (let i=0; i<numHormuz; i++) {
-      ghostShips.push({
-        mmsi: 900000000 + i,
-        lat: 25.5 + Math.random() * 1.5,
-        lng: 54.5 + Math.random() * 2.5,
-        speed: Math.random() * 14,
-        heading: Math.random() * 360,
-        type: Math.random() > 0.5 ? 'tanker' : 'cargo',
-        name: `V-SAT ${Math.floor(Math.random()*9000)+1000}`,
-        destination: 'UNKNOWN',
-        flag: 'S-AIS'
-      });
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'User-Agent': 'OSIRIS-Maritime/1.0',
+      },
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      globalForAis.vesselApiStatus = 'degraded';
+      globalForAis.vesselApiLastError = `http_${res.status}`;
+      return;
     }
 
-    // Generate Suez
-    for (let i=0; i<numSuez; i++) {
-      ghostShips.push({
-        mmsi: 910000000 + i,
-        lat: 28.0 + Math.random() * 3.5,
-        lng: 32.5 + Math.random() * 1.0,
-        speed: Math.random() * 12,
-        heading: Math.random() * 360,
-        type: Math.random() > 0.7 ? 'tanker' : 'cargo',
-        name: `V-SAT ${Math.floor(Math.random()*9000)+1000}`,
-        destination: 'EUROPE',
-        flag: 'S-AIS'
+    const rows = extractVesselRows(await res.json()).slice(0, 5000);
+    let merged = 0;
+    for (const row of rows) {
+      const mmsi = toNumber(row.mmsi ?? row.MMSI ?? row.id);
+      const lat = toNumber(row.lat ?? row.latitude ?? row.Latitude);
+      const lng = toNumber(row.lng ?? row.lon ?? row.longitude ?? row.Longitude);
+      if (!mmsi || lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+
+      shipsCache.set(mmsi, {
+        id: mmsi,
+        mmsi,
+        lat,
+        lng,
+        speed: toNumber(row.speed ?? row.sog ?? row.Sog) ?? 0,
+        heading: toNumber(row.heading ?? row.cog ?? row.TrueHeading ?? row.Cog) ?? 0,
+        timestamp: Date.now(),
+        type: String(row.type || row.ship_type || 'cargo'),
+        name: String(row.name || row.ship_name || row.ShipName || `MMSI ${mmsi}`),
+        destination: String(row.destination || row.Destination || 'UNKNOWN'),
+        flag: String(row.flag || row.source || 'licensed-ais'),
       });
+      merged++;
     }
 
-    // Merge into global cache
-    for (const ship of ghostShips) {
-      shipsCache.set(ship.mmsi, {
-        id: ship.mmsi, mmsi: ship.mmsi, lat: ship.lat, lng: ship.lng, speed: ship.speed,
-        heading: ship.heading, timestamp: Date.now(), type: ship.type,
-        name: ship.name, destination: ship.destination, flag: ship.flag
-      });
-    }
+    globalForAis.vesselApiStatus = merged > 0 ? 'ok' : 'empty_response';
+    globalForAis.vesselApiLastSuccessAt = Date.now();
+    globalForAis.vesselApiLastError = undefined;
   } catch (e) {
-    console.warn("VesselAPI Fallback Error:", e);
+    globalForAis.vesselApiStatus = 'degraded';
+    globalForAis.vesselApiLastError = e instanceof Error ? e.message : String(e);
+    console.warn("VesselAPI fallback error:", e);
+  }
+}
+
+function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const dx = (lng1 - lng2) * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+  const dy = lat1 - lat2;
+  return Math.sqrt(dx * dx + dy * dy) * 111.32;
+}
+
+function buildMaritimePayload(
+  ships: PositionedShipRecord[],
+  options: {
+    source: string;
+    degraded?: boolean;
+    error?: string;
+    upstreamFreshness?: Record<string, unknown> | null;
+  }
+) {
+  const newestShipTimestamp = ships.reduce(
+    (latest, ship) => Math.max(latest, Number(ship.timestamp || 0)),
+    0
+  );
+
+  const dynamicPorts = PORTS.map(port => {
+    let nearbyCount = 0;
+    let waitingCount = 0;
+
+    for (let i = 0; i < ships.length; i++) {
+      if (getDistanceKm(port.lat, port.lng, ships[i].lat, ships[i].lng) < 50) {
+        nearbyCount++;
+        if ((ships[i].speed ?? 0) < 0.5 && ships[i].type !== 'military') {
+          waitingCount++;
+        }
+      }
+    }
+
+    const congestionRatio = nearbyCount > 0 ? waitingCount / nearbyCount : 0;
+    let congestionStatus = 'NORMAL';
+    let estDwellTime = '1-2 Days';
+
+    if (congestionRatio > 0.6 || waitingCount > 30) {
+      congestionStatus = 'SEVERE';
+      estDwellTime = '7+ Days';
+    } else if (congestionRatio > 0.4 || waitingCount > 15) {
+      congestionStatus = 'CONGESTED';
+      estDwellTime = '3-5 Days';
+    }
+
+    return {
+      ...port,
+      volume: `${port.volume} | LIVE: ${nearbyCount} (WAITING: ${waitingCount})`,
+      congestion: congestionStatus,
+      dwell_time: estDwellTime,
+    };
+  });
+
+  const dynamicChokepoints = CHOKEPOINTS.map(choke => {
+    let nearbyCount = 0;
+    for (let i = 0; i < ships.length; i++) {
+      if (getDistanceKm(choke.lat, choke.lng, ships[i].lat, ships[i].lng) < 100) nearbyCount++;
+    }
+
+    let dynamicRisk = choke.risk;
+    if (nearbyCount > 50) dynamicRisk = 'CRITICAL';
+    else if (nearbyCount > 20 && dynamicRisk !== 'CRITICAL') dynamicRisk = 'HIGH';
+    else if (nearbyCount > 5 && dynamicRisk === 'LOW') dynamicRisk = 'ELEVATED';
+
+    return {
+      ...choke,
+      traffic: `${choke.traffic} | LIVE SHIPS: ${nearbyCount}`,
+      risk: dynamicRisk,
+    };
+  });
+
+  return {
+    ports: dynamicPorts,
+    chokepoints: dynamicChokepoints,
+    ships,
+    total_ports: dynamicPorts.length,
+    total_chokepoints: dynamicChokepoints.length,
+    total_ships: ships.length,
+    freshness: {
+      newest_ship_at: newestShipTimestamp ? new Date(newestShipTimestamp).toISOString() : null,
+      newest_ship_age_seconds: newestShipTimestamp ? Math.round((Date.now() - newestShipTimestamp) / 1000) : null,
+      tracking_service: {
+        configured: Boolean(TRACKING_URL),
+        source: options.source,
+        degraded: Boolean(options.degraded),
+        last_error: options.error || null,
+        upstream: options.upstreamFreshness || null,
+      },
+      aisstream: {
+        configured: LEGACY_MARITIME_INGEST && Boolean(process.env.AIS_API_KEY),
+        connecting: LEGACY_MARITIME_INGEST ? globalForAis.isAisConnecting : false,
+        last_connected_at: globalForAis.lastAisConnectedAt ? new Date(globalForAis.lastAisConnectedAt).toISOString() : null,
+        last_message_at: globalForAis.lastAisMessageAt ? new Date(globalForAis.lastAisMessageAt).toISOString() : null,
+        last_error: globalForAis.lastAisError || null,
+      },
+      vessel_api: {
+        configured: LEGACY_MARITIME_INGEST && Boolean(process.env.VESSEL_API_KEY && process.env.VESSEL_API_URL),
+        status: LEGACY_MARITIME_INGEST ? (globalForAis.vesselApiStatus || 'not_configured') : 'disabled',
+        last_success_at: globalForAis.vesselApiLastSuccessAt ? new Date(globalForAis.vesselApiLastSuccessAt).toISOString() : null,
+        last_error: globalForAis.vesselApiLastError || null,
+      },
+    },
+    degraded: Boolean(options.degraded),
+    error: options.error,
+    source: options.source,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function fetchTrackingMaritime() {
+  if (!TRACKING_URL) return null;
+
+  try {
+    const res = await fetch(`${TRACKING_URL}/maritime?stale=false&limit=10000`, {
+      signal: AbortSignal.timeout(5000),
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'OSIRIS-UI/1.0',
+      },
+    });
+
+    if (!res.ok) return null;
+    const payload = await res.json() as {
+      ships?: ShipRecord[];
+      freshness?: Record<string, unknown>;
+      source?: string;
+    };
+    const ships = Array.isArray(payload.ships)
+      ? payload.ships.filter((ship): ship is PositionedShipRecord =>
+        typeof ship.lat === 'number' && typeof ship.lng === 'number'
+      )
+      : [];
+
+    return buildMaritimePayload(ships, {
+      source: payload.source || 'osiris-tracking',
+      upstreamFreshness: payload.freshness || null,
+    });
+  } catch (error) {
+    globalForAis.lastAisError = error instanceof Error ? error.message : String(error);
+    return null;
   }
 }
 
 export async function GET() {
+  const moduleState = await getModuleState('ais');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('ais', {
+      ports: [],
+      chokepoints: [],
+      ships: [],
+      total_ports: 0,
+      total_chokepoints: 0,
+      total_ships: 0,
+      freshness: {
+        newest_ship_at: null,
+        newest_ship_age_seconds: null,
+        aisstream: { configured: Boolean(process.env.AIS_API_KEY), connecting: false },
+        vessel_api: { configured: Boolean(process.env.VESSEL_API_KEY && process.env.VESSEL_API_URL) },
+      },
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
+  const trackingPayload = await fetchTrackingMaritime();
+  if (trackingPayload) {
+    return NextResponse.json(trackingPayload, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+      },
+    });
+  }
+
+  if (!LEGACY_MARITIME_INGEST) {
+    return NextResponse.json(buildMaritimePayload([], {
+      source: 'osiris-tracking',
+      degraded: true,
+      error: TRACKING_URL ? 'tracking_service_unavailable' : 'tracking_service_not_configured',
+    }), {
+      status: 503,
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+      },
+    });
+  }
+
   // Trigger Hybrid Fallback
   await fetchVesselApiFallback();
 
@@ -284,7 +546,14 @@ export async function GET() {
     }
   }
 
-  const ships = Array.from(shipsCache.values());
+  const ships = Array.from(shipsCache.values()).filter(
+    (ship): ship is ShipRecord & { lat: number; lng: number } =>
+      typeof ship.lat === 'number' && typeof ship.lng === 'number'
+  );
+  const newestShipTimestamp = ships.reduce(
+    (latest, ship) => Math.max(latest, Number(ship.timestamp || 0)),
+    0
+  );
 
   // Dynamically calculate live traffic (Fast approximation of Haversine)
   const getDistanceKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
@@ -301,7 +570,7 @@ export async function GET() {
       if (getDistanceKm(port.lat, port.lng, ships[i].lat, ships[i].lng) < 50) {
         nearbyCount++;
         // If speed is less than 0.5 knots, consider it anchored/waiting
-        if (ships[i].speed < 0.5 && ships[i].type !== 'military') {
+        if ((ships[i].speed ?? 0) < 0.5 && ships[i].type !== 'military') {
           waitingCount++;
         }
       }
@@ -354,6 +623,23 @@ export async function GET() {
     total_ports: dynamicPorts.length,
     total_chokepoints: dynamicChokepoints.length,
     total_ships: ships.length,
+    freshness: {
+      newest_ship_at: newestShipTimestamp ? new Date(newestShipTimestamp).toISOString() : null,
+      newest_ship_age_seconds: newestShipTimestamp ? Math.round((Date.now() - newestShipTimestamp) / 1000) : null,
+      aisstream: {
+        configured: Boolean(process.env.AIS_API_KEY),
+        connecting: globalForAis.isAisConnecting,
+        last_connected_at: globalForAis.lastAisConnectedAt ? new Date(globalForAis.lastAisConnectedAt).toISOString() : null,
+        last_message_at: globalForAis.lastAisMessageAt ? new Date(globalForAis.lastAisMessageAt).toISOString() : null,
+        last_error: globalForAis.lastAisError || null,
+      },
+      vessel_api: {
+        configured: Boolean(process.env.VESSEL_API_KEY && process.env.VESSEL_API_URL),
+        status: globalForAis.vesselApiStatus || 'not_configured',
+        last_success_at: globalForAis.vesselApiLastSuccessAt ? new Date(globalForAis.vesselApiLastSuccessAt).toISOString() : null,
+        last_error: globalForAis.vesselApiLastError || null,
+      },
+    },
     timestamp: new Date().toISOString(),
   }, {
     headers: { 

@@ -1,34 +1,16 @@
 import { NextResponse } from 'next/server';
 import { parseIPv4, isPrivateOrReserved } from '@/lib/osint-utils';
+import { createSlidingWindowRateLimiter } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
 
 export const dynamic = 'force-dynamic';
 
-interface RateLimitEntry {
-  timestamps: number[];
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 5;
-
-function checkRateLimit(requesterIp: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(requesterIp);
-
-  if (!entry) {
-    rateLimitMap.set(requesterIp, { timestamps: [now] });
-    return true;
-  }
-
-  entry.timestamps = entry.timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-
-  if (entry.timestamps.length >= RATE_LIMIT_MAX) {
-    return false;
-  }
-
-  entry.timestamps.push(now);
-  return true;
-}
+const sweepRateLimiter = createSlidingWindowRateLimiter({
+  limit: RATE_LIMIT_MAX,
+  windowMs: RATE_LIMIT_WINDOW_MS,
+});
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -64,10 +46,7 @@ export async function GET(req: Request) {
   }
 
   // --- 2. Rate Limiting ---
-  const forwarded = req.headers.get('x-forwarded-for');
-  const requesterIp = forwarded?.split(',')[0]?.trim() || '127.0.0.1';
-
-  if (!checkRateLimit(requesterIp)) {
+  if (!sweepRateLimiter.check(getClientIp(req, '127.0.0.1')).allowed) {
     return NextResponse.json(
       { error: 'Rate limit exceeded.' },
       { status: 429 },

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Severe Weather & Anomalies API
@@ -80,6 +81,16 @@ type NwsResponse = {
 };
 
 export async function GET() {
+  const moduleState = await getModuleState('weather');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('weather', {
+      events: [],
+      total: 0,
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     const [eonetRes, nwsRes] = await Promise.allSettled([
       stealthFetch('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=100', {

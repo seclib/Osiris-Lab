@@ -1,9 +1,20 @@
 import { NextResponse } from 'next/server';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 // Cyber threat intelligence from public feeds
 // Inspired by WorldMonitor's infrastructure tracking
 
 export async function GET() {
+  const moduleState = await getModuleState('cyber');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('cyber', {
+      threats: [],
+      stats: {},
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     const results: any = { threats: [], stats: {}, timestamp: new Date().toISOString() };
 

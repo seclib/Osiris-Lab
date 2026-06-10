@@ -1,6 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Satellite Tracking API
@@ -80,8 +81,8 @@ function propagateSGP4Simple(line1: string, line2: string): { lat: number; lng: 
     epochDate.setDate(epochDate.getDate() + epochDay - 1);
     const elapsedMin = (now.getTime() - epochDate.getTime()) / 60000;
 
-    // Reject stale TLEs (> 30 days old) unless it's the emergency fallback
-    if (Math.abs(elapsedMin) > 43200 && !line1.includes('27885-3')) return null;
+    // Reject stale TLEs older than 30 days.
+    if (Math.abs(elapsedMin) > 43200) return null;
 
     const n = meanMotion * 2 * Math.PI / 1440;
     const M = ((meanAnomDeg * Math.PI / 180) + n * elapsedMin) % (2 * Math.PI);
@@ -133,13 +134,38 @@ function propagateSGP4Simple(line1: string, line2: string): { lat: number; lng: 
 // SatNOGS Open API - Provides full TLE JSON without API keys or IP blocks
 const SATNOGS_API = 'https://db.satnogs.org/api/tle/?format=json';
 
-let globalCachedSats: any[] = [];
+type TleSatellite = {
+  name: string;
+  line1: string;
+  line2: string;
+};
+
+type SatnogsTleRow = {
+  tle0?: string;
+  tle1?: string;
+  tle2?: string;
+};
+
+let globalCachedSats: TleSatellite[] = [];
 let globalCacheTime = 0;
 
 export async function GET() {
+  const moduleState = await getModuleState('satellites');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('satellites', {
+      satellites: [],
+      total: 0,
+      source: 'module-disabled',
+      degraded: false,
+      raw_count: 0,
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     const nowTime = Date.now();
-    let allSats: any[] = globalCachedSats;
+    let allSats: TleSatellite[] = globalCachedSats;
     let source = 'memory-cache';
 
     if (globalCachedSats.length === 0 || nowTime - globalCacheTime > 3600000) { // 1 hour cache
@@ -150,8 +176,8 @@ export async function GET() {
         });
         
         if (res.ok) {
-          const data = await res.json();
-          const fetchedSats: any[] = [];
+          const data = (await res.json()) as SatnogsTleRow[];
+          const fetchedSats: TleSatellite[] = [];
           const seen = new Set<string>();
 
           for (const item of data) {
@@ -179,11 +205,10 @@ export async function GET() {
       }
     }
 
-    // Emergency Fallback if cache is totally empty and SatNOGS is down
+    // Do not synthesize satellite positions from stale bundled TLEs. If the
+    // upstream and cache are empty, return an honest degraded empty dataset.
     if (allSats.length === 0) {
-      const issFallback = "1 25544U 98067A   24146.40251785  .00015505  00000-0  27885-3 0  9997\n2 25544  51.6402 189.7042 0004381 334.8091 106.8778 15.50091157455243";
-      allSats = [{ name: 'ISS (FALLBACK)', line1: issFallback.split('\n')[0], line2: issFallback.split('\n')[1] }];
-      source = 'emergency-fallback';
+      source = 'satnogs-unavailable';
     }
 
     // Sample for performance (max 2000 satellites)
@@ -216,6 +241,7 @@ export async function GET() {
       satellites,
       total: satellites.length,
       source,
+      degraded: allSats.length === 0,
       raw_count: allSats.length,
       timestamp: new Date().toISOString(),
     }, {

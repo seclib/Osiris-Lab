@@ -1,0 +1,18 @@
+{
+  "name": "@osiris/event-bus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OSIRIS Redis Streams event bus ingestion and consumer service",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/logger.js && node --check src/event-schema.js && node --check src/normalizers.js && node --check src/redis-stream-bus.js && node --check src/polling-worker.js && node --check src/stream-consumer.js && node --check src/server.js"
+  },
+  "dependencies": {
+    "redis": "^4.7.0"
+  }
+}

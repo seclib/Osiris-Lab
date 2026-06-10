@@ -1,5 +1,6 @@
 
 import { NextResponse } from 'next/server';
+import { disabledModulePayload, getModuleState } from '@/lib/module-registry';
 
 /**
  * OSIRIS — Earthquake Data API
@@ -8,6 +9,16 @@ import { NextResponse } from 'next/server';
  */
 
 export async function GET() {
+  const moduleState = await getModuleState('earthquakes');
+  if (moduleState && !moduleState.enabled) {
+    return NextResponse.json(await disabledModulePayload('earthquakes', {
+      earthquakes: [],
+      total: 0,
+    }), {
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   try {
     const url = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson';
     const res = await fetch(url, {

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { isRateLimited, getClientIp } from '@/lib/ssrf-guard';
+import { isRateLimited } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/request-context';
 import { matchExact, type SanctionEntry } from '@/lib/sanctions';
 
 // IP Geolocation + Reputation — combines multiple free sources.

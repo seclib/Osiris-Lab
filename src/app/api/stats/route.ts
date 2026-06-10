@@ -1,5 +1,14 @@
 import { NextResponse } from 'next/server';
 
+const STATS_FETCH_TIMEOUT_MS = 5000;
+
+function fetchWithTimeout(url: string, init: RequestInit = {}) {
+  return fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(STATS_FETCH_TIMEOUT_MS),
+  });
+}
+
 /**
  * OSIRIS — Global Stats API
  * Lightweight aggregation endpoint.
@@ -19,12 +28,12 @@ export async function GET(req: Request) {
 
     // Fetch all internal APIs in parallel (they have their own Cache-Control TTLs)
     const [flightsRes, satsRes, cctvRes, weatherRes, infraRes, gdeltRes] = await Promise.allSettled([
-      fetch(`${origin}/api/flights`, { next: { revalidate: 45 } }),
-      fetch(`${origin}/api/satellites`, { next: { revalidate: 3600 } }),
-      fetch(`${origin}/api/cctv`, { next: { revalidate: 3600 } }),
-      fetch(`${origin}/api/weather`, { next: { revalidate: 300 } }),
-      fetch(`${origin}/api/infrastructure`, { next: { revalidate: 86400 } }),
-      fetch(`${origin}/api/gdelt`, { next: { revalidate: 300 } })
+      fetchWithTimeout(`${origin}/api/flights`, { next: { revalidate: 45 } }),
+      fetchWithTimeout(`${origin}/api/satellites`, { next: { revalidate: 3600 } }),
+      fetchWithTimeout(`${origin}/api/cctv?lat=42.70&lng=25.48&radius=8`, { next: { revalidate: 3600 } }),
+      fetchWithTimeout(`${origin}/api/weather`, { next: { revalidate: 300 } }),
+      fetchWithTimeout(`${origin}/api/infrastructure`, { next: { revalidate: 86400 } }),
+      fetchWithTimeout(`${origin}/api/gdelt`, { next: { revalidate: 300 } })
     ]);
 
     let flights = 0;
@@ -55,7 +64,7 @@ export async function GET(req: Request) {
 
     if (weatherRes.status === 'fulfilled' && weatherRes.value.ok) {
       const data = await weatherRes.value.json();
-      weather = data.weather_events?.length || 0;
+      weather = data.events?.length || data.weather_events?.length || 0;
     }
 
     if (infraRes.status === 'fulfilled' && infraRes.value.ok) {
@@ -65,7 +74,7 @@ export async function GET(req: Request) {
 
     if (gdeltRes.status === 'fulfilled' && gdeltRes.value.ok) {
         const data = await gdeltRes.value.json();
-        incidents = data.gdelt?.length || 0;
+        incidents = data.events?.length || data.gdelt?.length || 0;
     }
 
     return NextResponse.json({
