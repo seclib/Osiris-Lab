@@ -50,12 +50,13 @@ class EventDeduper {
 }
 
 class BridgeWorker {
-  constructor(feed, config, logger, publisher, deduper) {
+  constructor(feed, config, logger, publisher, deduper, wsHub = null) {
     this.feed = feed;
     this.config = config;
     this.logger = logger;
     this.publisher = publisher;
     this.deduper = deduper;
+    this.wsHub = wsHub;
     this.timer = null;
     this.stopped = true;
     this.running = false;
@@ -163,6 +164,7 @@ class BridgeWorker {
       }
 
       const published = await this.publisher.publishBatch(uniqueEvents);
+      if (published.publishedEvents.length) this.wsHub?.broadcastEvents(published.publishedEvents);
       this.state.status = 'OK';
       this.state.normalized += normalized.events.length;
       this.state.published += published.accepted;

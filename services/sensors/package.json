@@ -1,0 +1,18 @@
+{
+  "name": "@osiris/sensors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pluggable OSIRIS OSINT sensor framework for Redis Streams",
+  "main": "registry.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start:opensky": "node opensky/src/index.js",
+    "check": "node --check event-schema.js && node --check base-sensor.js && node --check registry.js && node --check opensky/src/opensky-sensor.js && node --check opensky/src/index.js"
+  },
+  "dependencies": {
+    "redis": "^4.7.0"
+  }
+}

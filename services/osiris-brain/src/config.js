@@ -126,6 +126,10 @@ function loadConfig() {
       streamKey,
       eventMaxLen: numberEnv('OSIRIS_BRAIN_STREAM_MAXLEN', numberEnv('EVENT_STREAM_MAXLEN', 0, { min: 0 }), { min: 0 }),
     },
+    websocket: {
+      snapshotMax: numberEnv('OSIRIS_BRAIN_WS_SNAPSHOT_MAX', 500, { min: 0, max: 10000 }),
+      heartbeatMs: numberEnv('OSIRIS_BRAIN_WS_HEARTBEAT_MS', 30000, { min: 5000 }),
+    },
     backpressure: {
       maxStreamLength: numberEnv('OSIRIS_BRAIN_BACKPRESSURE_LENGTH', 500000, { min: 1000 }),
       pauseMs: numberEnv('OSIRIS_BRAIN_BACKPRESSURE_PAUSE_MS', 5000, { min: 500 }),

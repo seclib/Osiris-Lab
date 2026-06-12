@@ -19,8 +19,8 @@ function sendText(res, statusCode, body) {
   res.end(body);
 }
 
-function createServer({ config, publisher, workers }) {
-  return http.createServer((req, res) => {
+function createServer({ config, publisher, workers, wsHub }) {
+  const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const feedStates = workers.map((worker) => worker.health());
     const enabledFeeds = feedStates.filter((feed) => feed.enabled);
@@ -36,6 +36,7 @@ function createServer({ config, publisher, workers }) {
             ? 'DEGRADED'
             : 'OK',
       redis: publisher.health(),
+      websocket: wsHub?.summary() || null,
       feeds: feedStates,
       time: new Date().toISOString(),
     };
@@ -68,6 +69,9 @@ function createServer({ config, publisher, workers }) {
 
     return sendJson(res, 404, { error: 'not_found' });
   });
+
+  wsHub?.attach(server);
+  return server;
 }
 
 module.exports = { createServer };

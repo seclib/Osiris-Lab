@@ -278,6 +278,58 @@ services:
       - data
       - egress
 
+  osiris-sensor-opensky:
+    <<: *node-runtime
+    image: "${OSIRIS_OPENSKY_SENSOR_IMAGE:-osiris-sensor-opensky:latest}"
+    build:
+      context: ./services/sensors
+      dockerfile: opensky/Dockerfile
+    depends_on:
+      osiris-redis:
+        condition: service_healthy
+    expose:
+      - "4701"
+    environment:
+      NODE_ENV: "production"
+      PORT: "4701"
+      REDIS_URL: "redis://osiris-redis:6379"
+      EVENT_STREAM_KEY: "${EVENT_STREAM_KEY:-osiris.stream}"
+      EVENT_STREAM_MAXLEN: "${EVENT_STREAM_MAXLEN:-0}"
+      OPENSKY_ENABLED: "${OPENSKY_SENSOR_ENABLED:-false}"
+      OPENSKY_API_URL: "${OPENSKY_API_URL:-https://opensky-network.org/api/states/all}"
+      OPENSKY_AUTH_URL: "${OPENSKY_AUTH_URL:-https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token}"
+      OPENSKY_CLIENT_ID: "${OPENSKY_CLIENT_ID:-}"
+      OPENSKY_CLIENT_SECRET: "${OPENSKY_CLIENT_SECRET:-}"
+      OPENSKY_BBOX: "${OPENSKY_BBOX:-}"
+      OPENSKY_ICAO24: "${OPENSKY_ICAO24:-}"
+      OPENSKY_POLL_SECONDS: "${OPENSKY_POLL_SECONDS:-}"
+      OPENSKY_EXTENDED: "${OPENSKY_EXTENDED:-true}"
+      OPENSKY_INCLUDE_ON_GROUND: "${OPENSKY_INCLUDE_ON_GROUND:-true}"
+      OPENSKY_MIN_ALTITUDE_M: "${OPENSKY_MIN_ALTITUDE_M:-}"
+      OPENSKY_MAX_ALTITUDE_M: "${OPENSKY_MAX_ALTITUDE_M:-}"
+      OPENSKY_MIN_VELOCITY_MPS: "${OPENSKY_MIN_VELOCITY_MPS:-}"
+      OPENSKY_REQUEST_TIMEOUT_MS: "${OPENSKY_REQUEST_TIMEOUT_MS:-10000}"
+      OPENSKY_RETRY_COUNT: "${OPENSKY_RETRY_COUNT:-2}"
+      OPENSKY_RETRY_BASE_MS: "${OPENSKY_RETRY_BASE_MS:-1000}"
+      OPENSKY_RETRY_MAX_MS: "${OPENSKY_RETRY_MAX_MS:-60000}"
+      OPENSKY_MIN_REQUEST_SPACING_MS: "${OPENSKY_MIN_REQUEST_SPACING_MS:-10000}"
+      OPENSKY_MAX_BATCH_SIZE: "${OPENSKY_MAX_BATCH_SIZE:-10000}"
+      SENSOR_MAX_STREAM_LENGTH: "${SENSOR_MAX_STREAM_LENGTH:-500000}"
+      SENSOR_BACKPRESSURE_PAUSE_MS: "${SENSOR_BACKPRESSURE_PAUSE_MS:-5000}"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4701/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: "${OPENSKY_SENSOR_MEM_LIMIT:-256m}"
+    cpus: "${OPENSKY_SENSOR_CPUS:-0.50}"
+    pids_limit: 128
+    networks:
+      - backend
+      - data
+      - egress
+
   osiris-event-bus:
     <<: *node-runtime
     image: "${OSIRIS_EVENT_BUS_IMAGE:-osiris-event-bus:latest}"
@@ -359,6 +411,8 @@ services:
       OSIRIS_BRAIN_MAX_EVENTS_PER_POLL: "${OSIRIS_BRAIN_MAX_EVENTS_PER_POLL:-10000}"
       OSIRIS_BRAIN_DEDUPE_TTL_MS: "${OSIRIS_BRAIN_DEDUPE_TTL_MS:-900000}"
       OSIRIS_BRAIN_BACKPRESSURE_LENGTH: "${OSIRIS_BRAIN_BACKPRESSURE_LENGTH:-500000}"
+      OSIRIS_BRAIN_WS_SNAPSHOT_MAX: "${OSIRIS_BRAIN_WS_SNAPSHOT_MAX:-2000}"
+      OSIRIS_BRAIN_WS_HEARTBEAT_MS: "${OSIRIS_BRAIN_WS_HEARTBEAT_MS:-30000}"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4500/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
@@ -576,6 +630,8 @@ services:
         condition: service_started
       osiris-tracking:
         condition: service_started
+      osiris-sensor-opensky:
+        condition: service_started
       osiris-event-bus:
         condition: service_started
       osiris-brain:
@@ -602,6 +658,7 @@ services:
         intelligence|http://osiris-intel:4000/health;
         tracking|http://osiris-tracking:4201/ready;
         tracking-sources|http://osiris-tracking:4201/sources|optional;
+        opensky-sensor|http://osiris-sensor-opensky:4701/ready|optional;
         event-bus|http://osiris-event-bus:4300/ready;
         brain-bridge|http://osiris-brain:4500/ready|optional;
         core-brain|http://osiris-core-brain:4400/ready;

@@ -80,10 +80,12 @@ class RedisPublisher {
   async publishBatch(events) {
     let accepted = 0;
     let rejected = 0;
+    const publishedEvents = [];
 
     for (const event of events) {
       try {
-        await this.publish(event);
+        const streamId = await this.publish(event);
+        publishedEvents.push({ ...event, source_stream_id: streamId });
         accepted += 1;
       } catch (error) {
         rejected += 1;
@@ -97,7 +99,7 @@ class RedisPublisher {
       }
     }
 
-    return { accepted, rejected };
+    return { accepted, rejected, publishedEvents };
   }
 
   health() {

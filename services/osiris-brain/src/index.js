@@ -5,13 +5,15 @@ const { createLogger } = require('./logger');
 const { RedisPublisher } = require('./redis-publisher');
 const { BridgeWorker, EventDeduper } = require('./bridge-worker');
 const { createServer } = require('./server');
+const { WebSocketHub } = require('./ws-hub');
 
 const config = loadConfig();
 const logger = createLogger(config.serviceName, config.logLevel);
 const publisher = new RedisPublisher(config, logger);
 const deduper = new EventDeduper(config.dedupeTtlMs);
-const workers = config.feeds.map((feed) => new BridgeWorker(feed, config, logger, publisher, deduper));
-const server = createServer({ config, publisher, workers });
+const wsHub = new WebSocketHub(config, logger);
+const workers = config.feeds.map((feed) => new BridgeWorker(feed, config, logger, publisher, deduper, wsHub));
+const server = createServer({ config, publisher, workers, wsHub });
 
 let shuttingDown = false;
 
@@ -37,6 +39,7 @@ async function shutdown(signal) {
   logger.info('osiris_brain_shutdown_started', { signal });
 
   for (const worker of workers) worker.stop();
+  wsHub.close();
 
   await new Promise((resolve) => {
     server.close(resolve);
