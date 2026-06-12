@@ -72,3 +72,5 @@ logs/
 dist/
 build/
 .next/
+docs/
+worldwideview/

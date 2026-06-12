@@ -10,7 +10,10 @@
   },
   "scripts": {
     "start:opensky": "node opensky/src/index.js",
-    "check": "node --check event-schema.js && node --check base-sensor.js && node --check registry.js && node --check opensky/src/opensky-sensor.js && node --check opensky/src/index.js"
+    "start:firms": "node firms/src/index.js",
+    "start:shodan": "node shodan/index.js",
+    "start:registry": "node registry-service.js",
+    "check": "node --check event-schema.js && node --check base-sensor.js && node --check registry.js && node --check registry-service.js && node --check opensky/src/opensky-sensor.js && node --check opensky/src/index.js && node --check firms/src/firms-sensor.js && node --check firms/src/index.js && node --check shodan/config.js && node --check shodan/rateLimiter.js && node --check shodan/logger.js && node --check shodan/client.js && node --check shodan/transformer.js && node --check shodan/index.js"
   },
   "dependencies": {
     "redis": "^4.7.0"
