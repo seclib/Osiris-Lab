@@ -1,100 +1,163 @@
-/**
- * OSIRIS-Lab v2 — Workflow Designer Service
- * 
- * Domain Events for Workflow aggregate.
- * Published when state changes occur within the domain.
- */
+export const WORKFLOW_EVENTS = {
+  CREATED: 'workflow.created',
+  UPDATED: 'workflow.updated',
+  DELETED: 'workflow.deleted',
+  EXECUTION_STARTED: 'workflow.execution.started',
+  EXECUTION_COMPLETED: 'workflow.execution.completed',
+  EXECUTION_FAILED: 'workflow.execution.failed',
+  STEP_STARTED: 'workflow.step.started',
+  STEP_COMPLETED: 'workflow.step.completed',
+  STEP_FAILED: 'workflow.step.failed',
+} as const;
 
-/**
- * Base interface for all workflow domain events.
- */
-export interface WorkflowDomainEvent {
-  aggregateId: string;
-  occurredAt: Date;
+export interface WorkflowCreatedEvent {
+  type: typeof WORKFLOW_EVENTS.CREATED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    workflow_id: string;
+    name: string;
+    version: number;
+    dag: {
+      nodes: Array<{
+        id: string;
+        type: string;
+        name: string;
+        config: Record<string, unknown>;
+      }>;
+      edges: Array<{
+        from: string;
+        to: string;
+        condition?: string;
+      }>;
+    };
+    created_by: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is created.
- */
-export interface WorkflowCreatedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowCreatedEvent';
-  name: string;
-  version: number;
-  createdBy: string;
+export interface WorkflowUpdatedEvent {
+  type: typeof WORKFLOW_EVENTS.UPDATED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    workflow_id: string;
+    version: number;
+    changes: Record<string, unknown>;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is updated (DAG modified).
- */
-export interface WorkflowUpdatedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowUpdatedEvent';
-  version: number;
-  changes: string[];
-  updatedBy: string;
+export interface WorkflowDeletedEvent {
+  type: typeof WORKFLOW_EVENTS.DELETED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    workflow_id: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is deleted.
- */
-export interface WorkflowDeletedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowDeletedEvent';
-  deletedBy: string;
+export interface WorkflowExecutionStartedEvent {
+  type: typeof WORKFLOW_EVENTS.EXECUTION_STARTED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    execution_id: string;
+    workflow_id: string;
+    workflow_version: number;
+    input: Record<string, unknown>;
+    started_at: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is activated.
- */
-export interface WorkflowActivatedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowActivatedEvent';
+export interface WorkflowExecutionCompletedEvent {
+  type: typeof WORKFLOW_EVENTS.EXECUTION_COMPLETED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    execution_id: string;
+    workflow_id: string;
+    status: 'completed' | 'failed' | 'terminated';
+    output: Record<string, unknown>;
+    duration_ms: number;
+    completed_at: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is paused.
- */
-export interface WorkflowPausedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowPausedEvent';
+export interface WorkflowStepStartedEvent {
+  type: typeof WORKFLOW_EVENTS.STEP_STARTED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    execution_id: string;
+    step_id: string;
+    node_id: string;
+    node_type: string;
+    started_at: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow is archived.
- */
-export interface WorkflowArchivedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowArchivedEvent';
+export interface WorkflowStepCompletedEvent {
+  type: typeof WORKFLOW_EVENTS.STEP_COMPLETED;
+  source: string;
+  timestamp: string;
+  version: string;
+  correlation_id?: string;
+  payload: {
+    execution_id: string;
+    step_id: string;
+    node_id: string;
+    status: 'completed' | 'failed' | 'skipped';
+    output: Record<string, unknown>;
+    duration_ms: number;
+    completed_at: string;
+    error?: string;
+  };
+  metadata?: {
+    tenant_id?: string;
+    user_id?: string;
+  };
 }
 
-/**
- * Event emitted when a workflow execution is started.
- */
-export interface WorkflowExecutionStartedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowExecutionStartedEvent';
-  executionId: string;
-  workflowId: string;
-  input?: Record<string, unknown>;
-}
-
-/**
- * Event emitted when a workflow step is completed.
- */
-export interface WorkflowStepCompletedEvent extends WorkflowDomainEvent {
-  readonly _tag: 'WorkflowStepCompletedEvent';
-  executionId: string;
-  stepId: string;
-  nodeId: string;
-  status: 'completed' | 'failed' | 'skipped';
-  output?: Record<string, unknown>;
-  error?: string;
-  durationMs: number;
-}
-
-/**
- * Union type of all workflow domain events.
- */
 export type WorkflowEvent =
   | WorkflowCreatedEvent
   | WorkflowUpdatedEvent
   | WorkflowDeletedEvent
-  | WorkflowActivatedEvent
-  | WorkflowPausedEvent
-  | WorkflowArchivedEvent
   | WorkflowExecutionStartedEvent
+  | WorkflowExecutionCompletedEvent
+  | WorkflowStepStartedEvent
   | WorkflowStepCompletedEvent;

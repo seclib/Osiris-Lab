@@ -1,73 +1,126 @@
-/**
- * OSIRIS-Lab v2 — Workflow Designer Service
- * 
- * CQRS Command: CreateWorkflow
- * Creates a new workflow aggregate with DAG validation.
- */
+import { Workflow, WorkflowStatus, WorkflowDAG } from '../../domain/entities/Workflow';
+import { IWorkflowRepository } from '../../domain/repositories/IWorkflowRepository';
+import { WorkflowDomainService, WorkflowValidationResult } from '../../domain/services/WorkflowDomainService';
 
-import { Result, ok, err, InfrastructureError } from '@osiris/shared/domain/Result';
-import { Workflow, WorkflowErrors, WorkflowProps } from '../../domain/entities/Workflow';
-import { DAG } from '../../domain/value-objects/DAG';
-import { IWorkflowRepository } from '../../infrastructure/repositories/IWorkflowRepository';
-import { INATSEventPublisher } from '../../infrastructure/nats/WorkflowEventPublisher';
+// Local Logger interface
+export interface Logger {
+  info(message: string, context?: Record<string, unknown>): void;
+  warn(message: string, context?: Record<string, unknown>): void;
+  error(message: string, context?: Record<string, unknown>): void;
+}
 
-export interface CreateWorkflowRequest {
+export interface CreateWorkflowCommandInput {
   name: string;
   description?: string;
-  dag: DAG;
+  dag: WorkflowDAG;
   createdBy: string;
 }
 
-export type CreateWorkflowResponse = WorkflowProps;
+export interface CreateWorkflowCommandResult {
+  success: boolean;
+  workflow?: Workflow;
+  validation?: WorkflowValidationResult;
+  error?: string;
+}
 
 export class CreateWorkflowCommand {
   constructor(
-    private readonly workflowRepository: IWorkflowRepository,
-    private readonly eventPublisher: INATSEventPublisher,
-    private readonly logger: { info: (msg: string, data?: Record<string, unknown>) => void; error: (msg: string, data?: Record<string, unknown>) => void }
+    private workflowRepository: IWorkflowRepository,
+    private domainService: WorkflowDomainService,
+    private logger: Logger,
+    private natsPublisher?: {
+      publish: (subject: string, data: Buffer) => Promise<void>;
+    }
   ) {}
 
-  async execute(request: CreateWorkflowRequest): Promise<Result<CreateWorkflowResponse, WorkflowErrors | InfrastructureError>> {
-    this.logger.info('Creating workflow', { name: request.name });
-
-    // 1. Create Workflow aggregate (validates name + DAG)
-    const workflowResult = Workflow.create({
-      id: crypto.randomUUID(),
-      name: request.name,
-      description: request.description,
-      dag: request.dag,
-      createdBy: request.createdBy,
+  async execute(input: CreateWorkflowCommandInput): Promise<CreateWorkflowCommandResult> {
+    this.logger.info('Executing CreateWorkflowCommand', {
+      name: input.name,
+      createdBy: input.createdBy,
     });
 
-    if (workflowResult.isErr()) {
-      this.logger.error('Workflow creation validation failed', { errors: workflowResult.error.message });
-      return workflowResult;
-    }
-
-    const workflow = workflowResult.unwrap();
-
-    // 2. Persist aggregate
-    const saveResult = await this.workflowRepository.save(workflow);
-    if (saveResult.isErr()) {
-      this.logger.error('Failed to persist workflow', { error: saveResult.error.message });
-      return err(saveResult.error);
-    }
-
-    // 3. Publish domain event to NATS
     try {
-      await this.eventPublisher.publish('workflow.created', {
-        workflow_id: workflow.id,
-        name: workflow.name,
-        version: workflow.version,
-        dag: workflow.dag,
-        created_by: workflow.createdBy,
+      // Create workflow entity
+      const workflow = new Workflow({
+        name: input.name,
+        description: input.description,
+        dag: input.dag,
+        createdBy: input.createdBy,
+        status: WorkflowStatus.DRAFT,
       });
-    } catch (error) {
-      this.logger.error('Failed to publish workflow.created event', { error: (error as Error).message });
-      return err(new InfrastructureError('NATSEventPublisher', 'publish', error as Error));
-    }
 
-    this.logger.info('Workflow created successfully', { workflowId: workflow.id, version: workflow.version });
-    return ok(workflow.toJSON());
+      // Validate workflow
+      const validation = this.domainService.validate(workflow);
+      if (!validation.valid) {
+        this.logger.warn('Workflow validation failed', {
+          errors: validation.errors,
+          warnings: validation.warnings,
+        });
+        return {
+          success: false,
+          validation,
+          error: `Validation failed: ${validation.errors.join(', ')}`,
+        };
+      }
+
+      // Save to database
+      const savedWorkflow = await this.workflowRepository.save(workflow);
+
+      // Publish workflow.created event
+      if (this.natsPublisher) {
+        const eventData = JSON.stringify({
+          id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          type: 'workflow.created',
+          source: 'workflow-designer-service',
+          timestamp: new Date().toISOString(),
+          version: '1.0.0',
+          payload: {
+            workflow_id: savedWorkflow.id,
+            name: savedWorkflow.name,
+            version: savedWorkflow.version,
+            dag: {
+              nodes: savedWorkflow.dag.nodes.map(n => ({
+                id: n.id,
+                type: n.type,
+                name: n.name,
+                config: n.config,
+              })),
+              edges: savedWorkflow.dag.edges.map(e => ({
+                from: e.from,
+                to: e.to,
+                condition: e.condition,
+              })),
+            },
+            created_by: savedWorkflow.createdBy,
+          },
+          metadata: {
+            user_id: input.createdBy,
+          },
+        });
+        
+        await this.natsPublisher.publish('workflow.created', eventData as unknown as Buffer);
+      }
+
+      this.logger.info('Workflow created successfully', {
+        workflowId: savedWorkflow.id,
+        name: savedWorkflow.name,
+      });
+
+      return {
+        success: true,
+        workflow: savedWorkflow,
+        validation,
+      };
+    } catch (error) {
+      this.logger.error('Failed to create workflow', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        name: input.name,
+      });
+
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
   }
 }

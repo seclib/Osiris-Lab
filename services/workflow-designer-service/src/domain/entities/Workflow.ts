@@ -1,152 +1,208 @@
-/**
- * OSIRIS-Lab v2 — Workflow Designer Service
- * 
- * DDD Aggregate Root: Workflow
- * Encapsulates DAG-based workflow state machine with Result pattern.
- * 
- * State Machine:
- *   draft ──activate──▶ active ──pause──▶ paused ──activate──▶ active
- *     │                   │                  │
- *     └───archive─────────┴───archive────────┴───archive──▶ archived
- */
-
-import { Result, ok, err, ValidationError, ConflictError } from '@osiris/shared/domain/Result';
-import { DAG, DAGValidator, WorkflowStatus } from '../value-objects/DAG';
-import { WorkflowCreatedEvent, WorkflowUpdatedEvent } from '../events/WorkflowEvents';
-
-export interface WorkflowProps {
-  id: string;
-  name: string;
-  description?: string;
-  dag: DAG;
-  version: number;
-  status: WorkflowStatus;
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
+export enum WorkflowStatus {
+  DRAFT = 'draft',
+  ACTIVE = 'active',
+  PAUSED = 'paused',
+  ARCHIVED = 'archived',
 }
 
-export type WorkflowErrors = ValidationError | ConflictError;
+export enum WorkflowNodeType {
+  INPUT = 'input',
+  OUTPUT = 'output',
+  PROCESS = 'process',
+  AI = 'ai',
+  CONDITION = 'condition',
+  LOOP = 'loop',
+  NOTIFICATION = 'notification',
+  SIEM = 'siem',
+}
+
+export interface WorkflowNode {
+  id: string;
+  type: WorkflowNodeType;
+  name: string;
+  config: Record<string, unknown>;
+  position?: {
+    x: number;
+    y: number;
+  };
+}
+
+export interface WorkflowEdge {
+  id: string;
+  from: string;
+  to: string;
+  condition?: string;
+}
+
+export interface WorkflowDAG {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export interface WorkflowProps {
+  id?: string;
+  name: string;
+  description?: string;
+  dag: WorkflowDAG;
+  version?: number;
+  status?: WorkflowStatus;
+  createdBy: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  lastExecuted?: Date;
+}
 
 export class Workflow {
-  private readonly props: WorkflowProps;
+  public readonly id: string;
+  public name: string;
+  public description: string;
+  public dag: WorkflowDAG;
+  public version: number;
+  public status: WorkflowStatus;
+  public readonly createdBy: string;
+  public readonly createdAt: Date;
+  public updatedAt: Date;
+  public lastExecuted?: Date;
 
-  private constructor(props: WorkflowProps) {
-    this.props = Object.freeze({ ...props });
+  constructor(props: WorkflowProps) {
+    this.id = props.id || this.generateId();
+    this.name = props.name;
+    this.description = props.description || '';
+    this.dag = props.dag;
+    this.version = props.version || 1;
+    this.status = props.status || WorkflowStatus.DRAFT;
+    this.createdBy = props.createdBy;
+    this.createdAt = props.createdAt || new Date();
+    this.updatedAt = props.updatedAt || new Date();
+    this.lastExecuted = props.lastExecuted;
   }
 
-  /**
-   * Factory method: creates a new Workflow aggregate.
-   * Validates the DAG before creation.
-   */
-  static create(props: {
-    id: string;
-    name: string;
-    description?: string;
-    dag: DAG;
-    createdBy: string;
-  }): Result<Workflow, ValidationError> {
-    if (!props.name || props.name.trim().length === 0) {
-      return err(new ValidationError('Workflow', 'Name is required'));
-    }
-    if (props.name.length > 500) {
-      return err(new ValidationError('Workflow', 'Name must be 500 characters or less'));
-    }
-
-    const dagValidation = DAGValidator.validate(props.dag);
-    if (!dagValidation.valid) {
-      return err(new ValidationError('Workflow', `Invalid DAG: ${dagValidation.errors.join(', ')}`, { errors: dagValidation.errors }));
-    }
-
-    return ok(new Workflow({
-      ...props,
-      version: 1,
-      status: 'draft',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }));
+  private generateId(): string {
+    return `wf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   }
 
-  static restore(props: WorkflowProps): Workflow {
-    return new Workflow(props);
+  public activate(): void {
+    if (this.status === WorkflowStatus.DRAFT) {
+      this.status = WorkflowStatus.ACTIVE;
+      this.updatedAt = new Date();
+    }
   }
 
-  // ─── Getters ────────────────────────────────────────────────────────────
+  public pause(): void {
+    if (this.status === WorkflowStatus.ACTIVE) {
+      this.status = WorkflowStatus.PAUSED;
+      this.updatedAt = new Date();
+    }
+  }
 
-  get id(): string { return this.props.id; }
-  get name(): string { return this.props.name; }
-  get description(): string | undefined { return this.props.description; }
-  get dag(): DAG { return this.props.dag; }
-  get version(): number { return this.props.version; }
-  get status(): WorkflowStatus { return this.props.status; }
-  get createdBy(): string { return this.props.createdBy; }
-  get createdAt(): Date { return this.props.createdAt; }
-  get updatedAt(): Date { return this.props.updatedAt; }
+  public archive(): void {
+    this.status = WorkflowStatus.ARCHIVED;
+    this.updatedAt = new Date();
+  }
 
-  // ─── Behaviors (State Machine) ──────────────────────────────────────────
+  public updateDAG(dag: WorkflowDAG): void {
+    this.dag = dag;
+    this.version += 1;
+    this.updatedAt = new Date();
+  }
 
-  /**
-   * Update the workflow DAG and metadata.
-   */
-  update(dag: DAG, updatedBy: string): Result<{ workflow: Workflow; event: WorkflowUpdatedEvent }, WorkflowErrors> {
-    if (this.props.status === 'archived') {
-      return err(new ConflictError('Workflow', 'Cannot update an archived workflow'));
+  public validate(): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    // Name required
+    if (!this.name || this.name.trim().length === 0) {
+      errors.push('Workflow name is required');
     }
 
-    const dagValidation = DAGValidator.validate(dag);
-    if (!dagValidation.valid) {
-      return err(new ValidationError('Workflow', `Invalid DAG: ${dagValidation.errors.join(', ')}`, { errors: dagValidation.errors }));
+    // DAG must have at least one node
+    if (this.dag.nodes.length === 0) {
+      errors.push('Workflow must have at least one node');
     }
 
-    const updated = new Workflow({
-      ...this.props,
-      dag,
-      version: this.props.version + 1,
-      updatedAt: new Date(),
-    });
+    // DAG must have at least one input and one output node
+    const inputNodes = this.dag.nodes.filter(n => n.type === WorkflowNodeType.INPUT);
+    const outputNodes = this.dag.nodes.filter(n => n.type === WorkflowNodeType.OUTPUT);
 
-    const event: WorkflowUpdatedEvent = {
-      _tag: 'WorkflowUpdatedEvent',
-      aggregateId: this.props.id,
-      version: updated.version,
-      changes: ['dag_modified'],
-      updatedBy,
-      occurredAt: updated.updatedAt,
+    if (inputNodes.length === 0) {
+      errors.push('Workflow must have at least one input node');
+    }
+
+    if (outputNodes.length === 0) {
+      errors.push('Workflow must have at least one output node');
+    }
+
+    // Validate edges
+    const nodeIds = new Set(this.dag.nodes.map(n => n.id));
+    for (const edge of this.dag.edges) {
+      if (!nodeIds.has(edge.from)) {
+        errors.push(`Invalid edge: source node ${edge.from} not found`);
+      }
+      if (!nodeIds.has(edge.to)) {
+        errors.push(`Invalid edge: target node ${edge.to} not found`);
+      }
+    }
+
+    // Check for cycles (simple check)
+    if (this.hasCycle()) {
+      errors.push('Workflow contains a cycle');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  private hasCycle(): boolean {
+    const visited = new Set<string>();
+    const recursionStack = new Set<string>();
+
+    const adjacencyList = new Map<string, string[]>();
+    for (const node of this.dag.nodes) {
+      adjacencyList.set(node.id, []);
+    }
+    for (const edge of this.dag.edges) {
+      adjacencyList.get(edge.from)?.push(edge.to);
+    }
+
+    const dfs = (nodeId: string): boolean => {
+      visited.add(nodeId);
+      recursionStack.add(nodeId);
+
+      const neighbors = adjacencyList.get(nodeId) || [];
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          if (dfs(neighbor)) return true;
+        } else if (recursionStack.has(neighbor)) {
+          return true;
+        }
+      }
+
+      recursionStack.delete(nodeId);
+      return false;
     };
 
-    return ok({ workflow: updated, event });
-  }
-
-  /**
-   * Activate the workflow (draft/paused → active).
-   */
-  activate(): Result<Workflow, ConflictError> {
-    if (this.props.status !== 'draft' && this.props.status !== 'paused') {
-      return err(new ConflictError('Workflow', `Cannot activate workflow in status: ${this.props.status}`));
+    for (const node of this.dag.nodes) {
+      if (!visited.has(node.id)) {
+        if (dfs(node.id)) return true;
+      }
     }
-    return ok(new Workflow({ ...this.props, status: 'active', updatedAt: new Date() }));
+
+    return false;
   }
 
-  /**
-   * Pause the workflow (active → paused).
-   */
-  pause(): Result<Workflow, ConflictError> {
-    if (this.props.status !== 'active') {
-      return err(new ConflictError('Workflow', `Cannot pause workflow in status: ${this.props.status}`));
-    }
-    return ok(new Workflow({ ...this.props, status: 'paused', updatedAt: new Date() }));
-  }
-
-  /**
-   * Archive the workflow (terminal state).
-   */
-  archive(): Workflow {
-    return new Workflow({ ...this.props, status: 'archived', updatedAt: new Date() });
-  }
-
-  // ─── Serialization ─────────────────────────────────────────────────────
-
-  toJSON(): WorkflowProps {
-    return { ...this.props };
+  public toJSON() {
+    return {
+      id: this.id,
+      name: this.name,
+      description: this.description,
+      dag: this.dag,
+      version: this.version,
+      status: this.status,
+      createdBy: this.createdBy,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      lastExecuted: this.lastExecuted,
+    };
   }
 }

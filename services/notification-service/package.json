@@ -1,36 +1,33 @@
 {
-  "name": "@osiris/workflow-designer-service",
-  "version": "2.0.0",
-  "description": "Visual workflow designer service with Temporal.io integration for DAG-based automation",
+  "name": "@osiris/notification-service",
+  "version": "1.0.0",
+  "description": "Real-time notification service with WebSocket, Push, and Email support",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn src/index.ts",
     "test": "jest",
-    "lint": "eslint src/**/*.ts",
-    "migrate": "psql $DATABASE_URL -f migrations/001_create_workflows.sql"
+    "lint": "eslint src/**/*.ts"
   },
   "dependencies": {
     "@osiris/nats-client": "workspace:*",
     "@osiris/logger": "workspace:*",
     "@osiris/metrics": "workspace:*",
     "express": "^4.18.2",
+    "socket.io": "^4.7.2",
     "pg": "^8.11.3",
     "ioredis": "^5.3.2",
-    "@temporalio/client": "^1.8.0",
-    "@temporalio/worker": "^1.8.0",
-    "@temporalio/activity": "^1.8.0",
-    "@temporalio/workflow": "^1.8.0",
-    "uuid": "^9.0.1",
-    "joi": "^17.11.0"
+    "nodemailer": "^6.9.7",
+    "firebase-admin": "^11.11.0",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.0",
     "@types/pg": "^8.10.9",
+    "@types/nodemailer": "^6.4.14",
     "@types/uuid": "^9.0.7",
-    "@types/joi": "^17.2.3",
     "typescript": "^5.3.3",
     "ts-node-dev": "^2.0.0",
     "jest": "^29.7.0",

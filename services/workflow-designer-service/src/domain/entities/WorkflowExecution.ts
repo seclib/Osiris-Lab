@@ -1,83 +1,154 @@
-/**
- * OSIRIS-Lab v2 — Workflow Designer Service
- * 
- * DDD Entity: WorkflowExecution
- * Tracks the execution lifecycle of a workflow.
- * State machine: running → completed | failed | cancelled
- * 
- * Référence: docs/ARCHITECTURE.md §4.1 (Workflow model)
- */
+export enum ExecutionStatus {
+  PENDING = 'pending',
+  RUNNING = 'running',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  TERMINATED = 'terminated',
+  CANCELLED = 'cancelled',
+}
 
-import { Result, ok, err, ConflictError } from '../../../../libs/shared/src/domain/Result';
-import { ExecutionStatus } from '../value-objects/DAG';
+export enum StepStatus {
+  PENDING = 'pending',
+  RUNNING = 'running',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  SKIPPED = 'skipped',
+}
 
-export interface WorkflowExecutionProps {
+export interface WorkflowStep {
   id: string;
-  workflowId: string;
-  version: number;
-  status: ExecutionStatus;
-  input?: Record<string, unknown>;
-  output?: Record<string, unknown>;
+  executionId: string;
+  nodeId: string;
+  nodeType: string;
+  status: StepStatus;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  error?: string;
   startedAt?: Date;
   completedAt?: Date;
-  createdAt: Date;
+  durationMs?: number;
+}
+
+export interface WorkflowExecutionProps {
+  id?: string;
+  workflowId: string;
+  workflowVersion: number;
+  status?: ExecutionStatus;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  steps?: WorkflowStep[];
+  error?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  createdAt?: Date;
+  triggeredBy: string;
 }
 
 export class WorkflowExecution {
-  private readonly props: WorkflowExecutionProps;
+  public readonly id: string;
+  public readonly workflowId: string;
+  public readonly workflowVersion: number;
+  public status: ExecutionStatus;
+  public readonly input: Record<string, unknown>;
+  public output: Record<string, unknown>;
+  public readonly steps: WorkflowStep[];
+  public error?: string;
+  public startedAt?: Date;
+  public completedAt?: Date;
+  public readonly createdAt: Date;
+  public readonly triggeredBy: string;
 
-  private constructor(props: WorkflowExecutionProps) {
-    this.props = Object.freeze({ ...props });
+  constructor(props: WorkflowExecutionProps) {
+    this.id = props.id || this.generateId();
+    this.workflowId = props.workflowId;
+    this.workflowVersion = props.workflowVersion;
+    this.status = props.status || ExecutionStatus.PENDING;
+    this.input = props.input;
+    this.output = props.output || {};
+    this.steps = props.steps || [];
+    this.error = props.error;
+    this.startedAt = props.startedAt;
+    this.completedAt = props.completedAt;
+    this.createdAt = props.createdAt || new Date();
+    this.triggeredBy = props.triggeredBy;
   }
 
-  static create(props: Omit<WorkflowExecutionProps, 'status' | 'createdAt'>): WorkflowExecution {
-    return new WorkflowExecution({ ...props, status: 'running', createdAt: new Date() });
+  private generateId(): string {
+    return `exec_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   }
 
-  static restore(props: WorkflowExecutionProps): WorkflowExecution {
-    return new WorkflowExecution(props);
-  }
-
-  // ─── Getters ──────────────────────────────────────────────────────────
-
-  get id(): string { return this.props.id; }
-  get workflowId(): string { return this.props.workflowId; }
-  get version(): number { return this.props.version; }
-  get status(): ExecutionStatus { return this.props.status; }
-  get input(): Record<string, unknown> | undefined { return this.props.input; }
-  get output(): Record<string, unknown> | undefined { return this.props.output; }
-  get startedAt(): Date | undefined { return this.props.startedAt; }
-  get completedAt(): Date | undefined { return this.props.completedAt; }
-  get createdAt(): Date { return this.props.createdAt; }
-
-  // ─── State Machine ─────────────────────────────────────────────────────
-
-  start(): WorkflowExecution {
-    return new WorkflowExecution({ ...this.props, status: 'running', startedAt: new Date() });
-  }
-
-  complete(output: Record<string, unknown>): Result<WorkflowExecution, ConflictError> {
-    if (this.props.status !== 'running') {
-      return err(new ConflictError('WorkflowExecution', `Cannot complete in status: ${this.props.status}`));
+  public start(): void {
+    if (this.status === ExecutionStatus.PENDING) {
+      this.status = ExecutionStatus.RUNNING;
+      this.startedAt = new Date();
     }
-    return ok(new WorkflowExecution({ ...this.props, status: 'completed', output, completedAt: new Date() }));
   }
 
-  fail(error: Record<string, unknown>): Result<WorkflowExecution, ConflictError> {
-    if (this.props.status !== 'running') {
-      return err(new ConflictError('WorkflowExecution', `Cannot fail in status: ${this.props.status}`));
+  public complete(output: Record<string, unknown>): void {
+    if (this.status === ExecutionStatus.RUNNING) {
+      this.status = ExecutionStatus.COMPLETED;
+      this.output = output;
+      this.completedAt = new Date();
     }
-    return ok(new WorkflowExecution({ ...this.props, status: 'failed', output: error, completedAt: new Date() }));
   }
 
-  cancel(): Result<WorkflowExecution, ConflictError> {
-    if (this.props.status !== 'running') {
-      return err(new ConflictError('WorkflowExecution', `Cannot cancel in status: ${this.props.status}`));
+  public fail(error: string): void {
+    if (this.status === ExecutionStatus.RUNNING) {
+      this.status = ExecutionStatus.FAILED;
+      this.error = error;
+      this.completedAt = new Date();
     }
-    return ok(new WorkflowExecution({ ...this.props, status: 'cancelled', completedAt: new Date() }));
   }
 
-  toJSON(): WorkflowExecutionProps {
-    return { ...this.props };
+  public terminate(reason?: string): void {
+    if (this.status === ExecutionStatus.RUNNING || this.status === ExecutionStatus.PENDING) {
+      this.status = ExecutionStatus.TERMINATED;
+      this.error = reason || 'Terminated by user';
+      this.completedAt = new Date();
+    }
+  }
+
+  public addStep(step: WorkflowStep): void {
+    this.steps.push(step);
+  }
+
+  public updateStep(stepId: string, updates: Partial<WorkflowStep>): void {
+    const step = this.steps.find(s => s.id === stepId);
+    if (step) {
+      Object.assign(step, updates);
+    }
+  }
+
+  public getDuration(): number | null {
+    if (this.startedAt && this.completedAt) {
+      return this.completedAt.getTime() - this.startedAt.getTime();
+    }
+    return null;
+  }
+
+  public isRunning(): boolean {
+    return this.status === ExecutionStatus.RUNNING;
+  }
+
+  public isCompleted(): boolean {
+    return this.status === ExecutionStatus.COMPLETED;
+  }
+
+  public toJSON() {
+    return {
+      id: this.id,
+      workflowId: this.workflowId,
+      workflowVersion: this.workflowVersion,
+      status: this.status,
+      input: this.input,
+      output: this.output,
+      steps: this.steps,
+      error: this.error,
+      startedAt: this.startedAt,
+      completedAt: this.completedAt,
+      createdAt: this.createdAt,
+      triggeredBy: this.triggeredBy,
+      duration: this.getDuration(),
+    };
   }
 }

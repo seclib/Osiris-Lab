@@ -1,7 +1,7 @@
 {
-  "name": "@osiris/workflow-designer-service",
-  "version": "2.0.0",
-  "description": "Visual workflow designer service with Temporal.io integration for DAG-based automation",
+  "name": "@osiris/siem-integration-service",
+  "version": "1.0.0",
+  "description": "SIEM integration service with bidirectional connectors for Splunk, QRadar, ELK, Sentinel",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -9,7 +9,7 @@
     "dev": "ts-node-dev --respawn src/index.ts",
     "test": "jest",
     "lint": "eslint src/**/*.ts",
-    "migrate": "psql $DATABASE_URL -f migrations/001_create_workflows.sql"
+    "migrate": "psql $DATABASE_URL -f migrations/001_create_siem.sql"
   },
   "dependencies": {
     "@osiris/nats-client": "workspace:*",
@@ -18,10 +18,7 @@
     "express": "^4.18.2",
     "pg": "^8.11.3",
     "ioredis": "^5.3.2",
-    "@temporalio/client": "^1.8.0",
-    "@temporalio/worker": "^1.8.0",
-    "@temporalio/activity": "^1.8.0",
-    "@temporalio/workflow": "^1.8.0",
+    "axios": "^1.6.2",
     "uuid": "^9.0.1",
     "joi": "^17.11.0"
   },

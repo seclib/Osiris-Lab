@@ -1,5 +1,6 @@
 # Dependencies
 /node_modules
+**/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -23,9 +24,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Local env files
-.env*.local
+# env
 .env
+.env.*
+!.env.example
 
 # Vercel
 .vercel
@@ -34,22 +36,18 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Scanner backend
+# ---------------------------------------------------------------------------
+# Autonomy Engine – generated artifacts, audit trails, and temporary proposals
+# ---------------------------------------------------------------------------
+autonomy_output/
+*.audit
+*.proposal.json
+audit.log
+audit_trail.json
+
+# Scanner backend (API key in env, not in git)
 scanner/
-
-# Data files
-threatfox.json
-
-# Dev scripts (one-time migration helpers)
-scripts/
-
-# AI agent config files
-CLAUDE.md
-AGENTS.md
-
-# Internal dev notes
-DO_NOT_PUSH.md
-implementation_plan.md
+.vercel
 
 # Security - prevent accidental backup commits
 scanner_backend_backup.js
@@ -57,7 +55,43 @@ scanner_backend_backup.js
 # Security - Prevent accidental manual leaks
 *Manual*.md
 
-# Docker secrets (sensitive credentials)
-.secrets/
+# docker
+**/volumes/
+**/data/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# AI models (ollama etc.)
+*.gguf
+*.bin
+models/
+
+# dependencies
+node_modules/
+**/node_modules/
+
+# logs
+*.log
+logs/
+
+# runtime
+dist/
+build/
+.next/
 docs/
+worldwideview/
+.agents/*
+.next/*
+
+osiris/
+AGENTS.md
+.clinerules
+cline.md
+plugins/
+scraper/
+sdk/
+seeds/
 data/
