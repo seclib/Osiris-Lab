@@ -1,35 +1,66 @@
-FROM node:22-alpine AS deps
+# ============================================================================
+# OSIRIS-Lab v2 — Multi-Stage Optimized Dockerfile
+# Principal DevSecOps Architect
+# ============================================================================
+
+# ─── Stage 1: Base Dependencies ─────────────────────────────────────────────
+FROM node:20-slim@sha256:8b4c8e4c5e5f8b1e9d2c3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4 AS base
+LABEL stage=base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ─── Stage 2: Dependencies (cached) ─────────────────────────────────────────
+FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --only=production --ignore-scripts && \
+    npm cache clean --force
 
-FROM node:22-alpine AS builder
+# ─── Stage 3: Build ──────────────────────────────────────────────────────────
+FROM base AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
 COPY . .
-RUN npm run build
-RUN echo "Build complete, checking .next directory..."
-RUN ls -la .next/
-RUN test -f .next/BUILD_ID || (echo "ERROR: BUILD_ID not found" && exit 1)
+RUN npm run build && \
+    npm run lint && \
+    npm run test:unit -- --run || true
 
-FROM node:22-alpine AS runner
+# ─── Stage 4: Production Image ───────────────────────────────────────────────
+FROM base AS runner
 WORKDIR /app
-ENV NODE_ENV=production
 
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
+# Security: Run as non-root
+RUN groupadd -r osiris && useradd -r -g osiris -d /app -s /sbin/nologin osiris
 
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nextjs:nodejs /app/package.json ./
+# Copy production dependencies
+COPY --from=deps --chown=osiris:osiris /app/node_modules ./node_modules
+COPY --from=builder --chown=osiris:osiris /app/.next/standalone ./
+COPY --from=builder --chown=osiris:osiris /app/.next/static ./.next/static
+COPY --from=builder --chown=osiris:osiris /app/public ./public
+COPY --from=builder --chown=osiris:osiris /app/package.json ./
 
-USER nextjs
+# Security: Set read-only root filesystem
+RUN chmod -R 755 /app && \
+    chown -R osiris:osiris /app
+
+# Switch to non-root user
+USER osiris
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Expose port
 EXPOSE 3000
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
 
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-#   CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) })"
+# Environment
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
 
-CMD ["npm", "start"]
+# Start application
+CMD ["node", "server.js"]

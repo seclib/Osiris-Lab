@@ -35,6 +35,26 @@ export enum SecurityEventCategory {
 export type ResourceAction = 'create' | 'read' | 'update' | 'delete' | 'execute' | 'access';
 
 /**
+ * JWT Token payload (standard claims + custom)
+ */
+export interface JWTTokenPayload {
+  // Standard claims
+  sub: string;        // Subject (user ID)
+  iss: string;        // Issuer
+  aud: string;        // Audience
+  exp: number;        // Expiration time
+  nbf?: number;       // Not before
+  iat: number;        // Issued at
+  jti: string;        // JWT ID (unique)
+
+  // Custom claims
+  role: string;
+  permissions: string[];
+  sessionId: string;
+  mfa?: boolean;      // MFA verified
+}
+
+/**
  * Audit log entry
  */
 export interface AuditLogEntry {
@@ -61,21 +81,6 @@ export interface AuditLogEntry {
   };
   metadata?: Record<string, unknown>;
   immutable: boolean;
-}
-
-/**
- * JWT Token payload
- */
-export interface JWTTokenPayload {
-  sub: string;
-  role: string;
-  permissions: string[];
-  sessionId: string;
-  iat: number;
-  exp: number;
-  iss: string;
-  aud: string;
-  jti: string;
 }
 
 /**
