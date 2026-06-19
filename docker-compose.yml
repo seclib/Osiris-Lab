@@ -1,119 +1,385 @@
 name: osiris
+
+# =============================================================================
+# PRODUCTION-GRADE DOCKER COMPOSE — OSIRIS PLATFORM
+# =============================================================================
+# Usage:
+#   docker compose up -d                              # Start all services
+#   docker compose up -d --build                      # Rebuild and start
+#   docker compose --compatibility up -d              # Apply resource limits
+#
+# Nodes:
+#   Hôte:3100  →  osiris:3000    (Next.js UI / API monolith)
+#   Hôte:8080  →  nginx:8080     (Cache proxy / reverse proxy)
+#   🔒 interne →  intel:4000     (Intelligence engine — no host port)
+#
+# Networks:
+#   osiris-net (bridge)  →  inter-service communication
+#   pas de réseau externe →  tout passe par nginx:8080
+# =============================================================================
+
+
+# ─── SECRETS (Docker Swarm mode ou fichier local) ──────────────────────────
+# En mode Swarm : `docker secret create <name> <file>`
+# En mode compose direct : lit depuis le chemin fichier.
+# ---------------------------------------------------------------------------
+secrets:
+  scanner_key:
+    file: ./.secrets/scanner_key.txt
+  scanner_url:
+    file: ./.secrets/scanner_url.txt
+  firms_api_key:
+    file: ./.secrets/firms_api_key.txt
+  opensky_client_id:
+    file: ./.secrets/opensky_client_id.txt
+  opensky_client_secret:
+    file: ./.secrets/opensky_client_secret.txt
+  n2yo_api_key:
+    file: ./.secrets/n2yo_api_key.txt
+  ais_api_key:
+    file: ./.secrets/ais_api_key.txt
+  discord_bot_url:
+    file: ./.secrets/discord_bot_url.txt
+
+
+# ─── SERVICES ──────────────────────────────────────────────────────────────
 services:
+
+  # =========================================================================
+  # 🧠  OSIRIS CORE — Next.js 16 standalone (UI + API monolith)
+  # =========================================================================
   osiris:
-    # Pulls the prebuilt image from GitHub Container Registry. The `build:`
-    # block is kept as a fallback: `docker compose up -d` uses the registry
-    # image if present/pullable, otherwise builds locally from the Dockerfile.
-    # Run `docker compose pull` to fetch the latest published image.
     build:
       context: .
       dockerfile: Dockerfile
+    image: ghcr.io/aiacos/osiris:latest
     container_name: osiris
-    # Host port is configurable via OSIRIS_PORT in .env (defaults to 3000).
+
+    # ── Port mapping ───────────────────────────────────────────────────────
+    # L'hôte écoute sur ${OSIRIS_PORT} (défaut 3100). Le conteneur écoute
+    # toujours sur 3000 (PORT interne, ne pas changer).
     ports:
-      - "${OSIRIS_PORT:-3000}:3000"
-    # Optional API keys / scanner backend — copy .env.template to .env and
-    # fill in what you need. Missing file is ignored (keyless feeds still work).
+      - "${OSIRIS_PORT:-3100}:3000"
+
+    # ── Environnement sensible via secrets ─────────────────────────────────
+    # Les secrets sont montés dans /run/secrets/<name> dans le conteneur.
+    # L'application doit les lire depuis le filesystem (voir src/lib/).
+    secrets:
+      - scanner_key
+      - scanner_url
+      - firms_api_key
+      - opensky_client_id
+      - opensky_client_secret
+      - n2yo_api_key
+      - ais_api_key
+      - discord_bot_url
+
+    # ── Variables d'environnement non-sensibles ────────────────────────────
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+
+      # Chemins des secrets dans le conteneur
+      SCANNER_KEY_FILE: /run/secrets/scanner_key
+      SCANNER_URL_FILE: /run/secrets/scanner_url
+      FIRMS_API_KEY_FILE: /run/secrets/firms_api_key
+      OPENSKY_CLIENT_ID_FILE: /run/secrets/opensky_client_id
+      OPENSKY_CLIENT_SECRET_FILE: /run/secrets/opensky_client_secret
+      N2YO_API_KEY_FILE: /run/secrets/n2yo_api_key
+      AIS_API_KEY_FILE: /run/secrets/ais_api_key
+      DISCORD_BOT_URL_FILE: /run/secrets/discord_bot_url
+
+      # Compatibilité ascendante : lire depuis .env si présent
+      # (le fichier .env est pass en env_file pour les variables simples)
     env_file:
       - path: .env
         required: false
-    environment:
-      - NODE_OPTIONS=--dns-result-order=ipv4first
-      - NODE_ENV=production
-      - PORT=3000
-      - HOSTNAME=0.0.0.0
+
+    # ── Résolution DNS hôte ────────────────────────────────────────────────
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-    networks:
-      - default
-      - umami_default
 
+    # ── Redémarrage et cycle de vie ────────────────────────────────────────
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true                                    # PID 1 — reap zombies
+
+    # ── Sécurité du conteneur ──────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE                          # Nécessaire pour bind le port 3000
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+      - /app/.next:size=256M
+
+    # ── Ressources (Compose v2 natif, pas besoin de --compatibility) ───────
+    # Note : ces directives fonctionnent avec docker compose (v2.23+).
+    # Pour les versions antérieures, utiliser --compatibility.
+    mem_limit: 512M
+    mem_reservation: 128M
+    cpus: '1.0'
+    oom_kill_disable: true                        # Évite OOM-kill sur le service critique
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+      nproc:
+        soft: 4096
+        hard: 8192
+
+    # ── Healthcheck ────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    # ── Logging — rotation structurée ──────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}/{{.ID}}"                  # Tag pour le corréler dans un aggregateur
+
+    # ── Réseau ─────────────────────────────────────────────────────────────
+    networks:
+      - osiris-net
+
+    # ── Dépendances ───────────────────────────────────────────────────────
+    depends_on:
+      osiris-intel:
+        condition: service_started
+
+
+  # =========================================================================
+  # 🌐  OSIRIS CACHE — nginx reverse proxy + tile cache
+  # =========================================================================
   osiris-cache:
     image: nginx:alpine
     container_name: osiris-cache
+
+    # ── Point d'entrée unique pour les clients ─────────────────────────────
+    # Tout le trafic externe passe par ce service. osiris:3000 n'est pas
+    # exposé directement à l'hôte (sauf via OSIRIS_PORT pour debug).
     ports:
       - "8080:8080"
+
+    # ── Stockage persistant ────────────────────────────────────────────────
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - nginx-cache:/var/cache/nginx
-    depends_on:
-      - osiris
-    restart: unless-stopped
-    networks:
-      - default
 
+    # ── Redémarrage et cycle de vie ────────────────────────────────────────
+    restart: unless-stopped
+    stop_grace_period: 10s
+    init: true
+
+    # ── Sécurité ───────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE                          # Port 8080
+      - CHOWN                                     # Nécessaire pour nginx worker
+      - SETGID
+      - SETUID
+    # Note : read_only partiel — nginx écrit dans /var/cache/nginx (volume)
+    # et /var/run/nginx.pid (tmpfs). Le volume nginx-cache n'est pas read_only
+    # pour permettre l'écriture du cache.
+    tmpfs:
+      - /var/run:size=8M
+      - /tmp:size=16M
+
+    # ── Ressources ─────────────────────────────────────────────────────────
+    mem_limit: 64M
+    mem_reservation: 32M
+    cpus: '0.5'
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    # ── Healthcheck ────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+    # ── Logging ────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}/{{.ID}}"
+
+    # ── Réseau ─────────────────────────────────────────────────────────────
+    networks:
+      - osiris-net
+
+    # ── Dépendances ────────────────────────────────────────────────────────
+    # Nginx attend que le healthcheck de osiris passe avant de démarrer.
+    # Cela évite les 502 pendant le démarrage de Next.js.
+    depends_on:
+      osiris:
+        condition: service_healthy
+
+
+  # =========================================================================
+  # 🧩  OSIRIS INTEL — Intelligence engine (entités, sanctions, Wikidata)
+  # =========================================================================
   osiris-intel:
     build:
       context: ./intel
       dockerfile: Dockerfile
+    image: osiris-intel:latest
     container_name: osiris-intel
-    ports:
-      - "4000:4000"
-    restart: unless-stopped
-    networks:
-      - default
 
+    # ── Pas de port exposé sur l'hôte ──────────────────────────────────────
+    # osiris communique avec intel via le DNS interne Docker (osiris-intel:4000).
+    # `expose` documente le port pour les autres services du réseau.
+    expose:
+      - "4000"
+
+    # ── Variables d'environnement ──────────────────────────────────────────
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      INTEL_PORT: 4000
+
+    # ── Redémarrage et cycle de vie ────────────────────────────────────────
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+
+    # ── Sécurité ───────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE                          # Port 4000
+      - CHOWN
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp:size=32M
+
+    # ── Ressources ─────────────────────────────────────────────────────────
+    mem_limit: 256M
+    mem_reservation: 64M
+    cpus: '0.5'
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    # ── Healthcheck ────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    # ── Logging ────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}/{{.ID}}"
+
+    # ── Réseau ─────────────────────────────────────────────────────────────
+    networks:
+      - osiris-net
+
+
+# ─── VOLUMES PERSISTANTS ──────────────────────────────────────────────────
 volumes:
   nginx-cache:
+    driver: local
+    # Optionnel : pin du cache sur un répertoire hôte pour persistance
+    # entre les reconstructions (recommandé en production) :
+    # driver_opts:
+    #   type: none
+    #   device: /data/osiris/nginx-cache
+    #   o: bind
 
+
+# ─── RÉSEAUX ──────────────────────────────────────────────────────────────
 networks:
-  umami_default:
-    external: true
+  osiris-net:
+    driver: bridge
+    # Optionnel : plage IP fixe pour les règles de pare-feu :
+    # ipam:
+    #   config:
+    #     - subnet: 172.20.0.0/16
+    #       gateway: 172.20.0.1
 
-# ── CasaOS app-store metadata (ignored by plain Docker Compose) ──
-x-casaos:
-  architectures:
-    - amd64
-    - arm64
-  main: osiris
-  author: simplifaisoul
-  developer: simplifaisoul
-  category: Network
-  description:
-    en_us: >-
-      OSIRIS is a production-grade open-source OSINT situational-awareness
-      dashboard. It aggregates real-time global intelligence across aviation,
-      maritime, CCTV networks, seismic activity, wildfires, news feeds,
-      weather, space weather, cyber threats (CVEs) and conflict zones into a
-      single GPU-accelerated MapLibre interface. Most features work with no
-      API keys.
-  tagline:
-    en_us: Real-time global OSINT intelligence dashboard
-  title:
-    en_us: OSIRIS
-  icon: https://raw.githubusercontent.com/Aiacos/osiris/master/public/casaos-icon.png
-  thumbnail: https://raw.githubusercontent.com/Aiacos/osiris/master/public/og-image.png
-  screenshot_link:
-    - https://raw.githubusercontent.com/Aiacos/osiris/master/public/og-image.png
-  scheme: http
-  hostname: ""
-  port_map: "3000"
-  index: /
-  webui_port: 3000
-  envs:
-    - container: SCANNER_URL
-      description:
-        en_us: "(Optional) RECON scanner backend URL, e.g. http://scanner:7700"
-    - container: SCANNER_KEY
-      description:
-        en_us: "(Optional) RECON scanner shared secret (must match backend OSIRIS_KEY)."
-    - container: FIRMS_API_KEY
-      description:
-        en_us: "(Optional) NASA FIRMS API key for active-fire data."
-    - container: AIS_API_KEY
-      description:
-        en_us: "(Optional) aisstream.io key for maritime vessel tracking."
-    - container: OPENSKY_CLIENT_ID
-      description:
-        en_us: "(Optional) OpenSky OAuth2 client id for higher aircraft rate limits."
-    - container: OPENSKY_CLIENT_SECRET
-      description:
-        en_us: "(Optional) OpenSky OAuth2 client secret."
-    - container: N2YO_API_KEY
-      description:
-        en_us: "(Optional) N2YO key for satellite tracking."
-  ports:
-    - container: "3000"
-      description:
-        en_us: "Web UI (HTTP)."
+# =============================================================================
+# LOGGING STACK (Grafana + Loki + Alloy)
+# Décommentez cette section pour activer la centralisation des logs
+# =============================================================================
+# services:
+#   osiris-alloy:
+#     image: grafana/alloy:latest
+#     container_name: osiris-alloy
+#     volumes:
+#       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+#       - /var/run/docker.sock:/var/run/docker.sock:ro
+#       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+#     command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+#     restart: unless-stopped
+#     networks:
+#       - osiris-net
+#       - osiris-logging
+#
+#   osiris-loki:
+#     image: grafana/loki:latest
+#     container_name: osiris-loki
+#     ports:
+#       - "3101:3100"
+#     volumes:
+#       - loki-data:/loki
+#       - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+#     command: -config.file=/etc/loki/local-config.yaml
+#     restart: unless-stopped
+#     networks:
+#       - osiris-logging
+#
+#   osiris-grafana:
+#     image: grafana/grafana:latest
+#     container_name: osiris-grafana
+#     ports:
+#       - "3001:3000"
+#     volumes:
+#       - grafana-data:/var/lib/grafana
+#       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+#     environment:
+#       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+#       - GF_USERS_ALLOW_SIGN_UP=false
+#     restart: unless-stopped
+#     networks:
+#       - osiris-logging
+#     depends_on:
+#       - loki
+#
+# volumes:
+#   loki-data:
+#   grafana-data:
+#
+# networks:
+#   osiris-logging:
+#     driver: bridge

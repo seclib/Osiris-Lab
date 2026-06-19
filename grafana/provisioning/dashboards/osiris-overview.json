@@ -1,0 +1,51 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "OSIRIS — Overview",
+    "tags": ["osiris"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Logs par Service",
+        "type": "logs",
+        "datasource": "Loki",
+        "targets": [
+          {
+            "expr": "sum(rate({container_name=~\"osiris|osiris-intel|osiris-cache\"}[5m])) by (container_name)",
+            "legendFormat": "{{container_name}}"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+      },
+      {
+        "id": 2,
+        "title": "Erreurs par Niveau",
+        "type": "logs",
+        "datasource": "Loki",
+        "targets": [
+          {
+            "expr": "sum(rate({level=~\"error|critical\"}[5m])) by (level)",
+            "legendFormat": "{{level}}"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+      },
+      {
+        "id": 3,
+        "title": "Statut des Conteneurs",
+        "type": "stat",
+        "datasource": "Loki",
+        "targets": [
+          {
+            "expr": "up{job=\"osiris-containers\"}",
+            "legendFormat": "{{container_name}}"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 8, "w": 24, "h": 6 }
+      }
+    ],
+    "time": { "from": "now-1h", "to": "now" },
+    "refresh": "5s"
+  }
+}

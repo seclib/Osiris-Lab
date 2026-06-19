@@ -11,17 +11,18 @@
  *
  * Security:
  *   - Outbound requests only to allowlisted domains
- *   - SPARQL inputs sanitized against injection
+ *   - SPARQL inputs validated with strict allowlist (no template injection)
  *   - Rate-limited per client IP
+ *   - Graceful shutdown on SIGTERM
  */
-
-const express = require('express');
-const app = express();
-const PORT = process.env.INTEL_PORT || 4000;
 
 // ════════════════════════════════════════════════════
 // §1 — CONFIGURATION
 // ════════════════════════════════════════════════════
+
+const express = require('express');
+const app = express();
+const PORT = process.env.INTEL_PORT || 4000;
 
 const SDN_CSV_URL = 'https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv';
 const WIKIDATA_ENDPOINT = 'https://query.wikidata.org/sparql';
@@ -168,10 +169,49 @@ function wdCacheSet(key, data) {
 // §4 — WIKIDATA SPARQL (safe)
 // ════════════════════════════════════════════════════
 
+/**
+ * Sanitize a user-supplied identifier for safe use in SPARQL queries.
+ *
+ * SPARQL injection is prevented by:
+ *   1. Explicitly rejecting any character that could break the query syntax
+ *      (quotes, braces, semicolons, hashes, comments).
+ *   2. Truncating to 100 characters (Wikidata labels are < 80 chars).
+ *   3. Using the sanitized value only in `rdfs:label` position — never in
+ *      property paths or SPARQL expressions.
+ */
 function sanitizeId(id) {
-  return id.replace(/[^a-zA-Z0-9 \-._]/g, '').trim();
+  if (typeof id !== 'string') return '';
+  // Reject if it contains characters that SPARQL could interpret as syntax:
+  //   "  → string terminators (within a string, these break out)
+  //   {  → graph patterns, grouping
+  //   }  → graph patterns
+  //   ;  → object list separator
+  //   #  → line comments
+  //   @  → language tags
+  //   ^  → inverse property paths
+  //   /  → property path concatenation
+  //   |  → property path alternation
+  //   `  → rarely used but dangerous in some SPARQL implementations
+  //   \  → escape sequences
+  //
+  // NOTE: `.` (dot) is deliberately allowed because it's common in entity
+  // names (e.g. "Apple Inc."). Inside a SPARQL string literal, a dot is
+  // just a literal character and does NOT act as a statement terminator.
+  if (/["{};#@^/|`\\]/.test(id)) return '';
+
+  // Collapse whitespace and trim
+  const clean = id.replace(/\s+/g, ' ').trim();
+  // Must be alphanumeric with basic punctuation only
+  const filtered = clean.replace(/[^a-zA-Z0-9 \-_.'()]/g, '').trim();
+  // Must have at least 2 chars after sanitization
+  if (filtered.length < 2) return '';
+  return filtered.slice(0, 100);
 }
 
+/**
+ * Execute a SPARQL query against the Wikidata endpoint with
+ * domain validation and timeout.
+ */
 async function sparql(query) {
   const url = `${WIKIDATA_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
   const parsed = new URL(url);
@@ -185,6 +225,28 @@ async function sparql(query) {
   if (!res.ok) return [];
   const json = await res.json();
   return json.results?.bindings || [];
+}
+
+/**
+ * Build a safe SPARQL label filter for an entity name.
+ * The label value is sanitized to prevent injection.
+ * Returns the FILTER clause string, or null if the input is invalid.
+ */
+function safeLabelFilter(label) {
+  const safe = sanitizeId(label);
+  if (!safe) return null;
+  return `FILTER(CONTAINS(LCASE(?itemLabel), "${safe.toLowerCase()}"))`;
+}
+
+/**
+ * Build a safe SPARQL label equality for an entity name.
+ * Returns the BIND clause string, or null if the input is invalid.
+ */
+function safeLabelEquality(label) {
+  const safe = sanitizeId(label);
+  if (!safe) return null;
+  // Escape for SPARQL — only necessary characters (none after sanitizeId)
+  return `?item rdfs:label "${safe}"@en`;
 }
 
 // Search Wikidata for an entity by name, returns QID or null
@@ -477,7 +539,8 @@ async function resolveIP(id) {
 
   // Step 1: ip-api.com — geolocation, ISP, ASN, proxy/hosting detection
   try {
-    const ipApiUrl = `http://ip-api.com/json/${encodeURIComponent(id)}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting`;
+    // Using HTTPS to prevent MITM on geolocation data
+    const ipApiUrl = `https://ip-api.com/json/${encodeURIComponent(id)}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting`;
     const parsed = new URL(ipApiUrl);
     if (!ALLOWED_DOMAINS.has(parsed.hostname)) throw new Error(`Blocked domain: ${parsed.hostname}`);
     const res = await fetch(ipApiUrl, { signal: AbortSignal.timeout(8000) });
@@ -766,11 +829,32 @@ async function boot() {
   // Refresh sanctions every 24h
   setInterval(() => loadSanctions(), SDN_REFRESH_MS);
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[INTEL] Intelligence Layer ready on port ${PORT}`);
     console.log(`[INTEL] Sanctions: ${sanctionsIndex.entries.length} entities indexed`);
     console.log(`[INTEL] Resolve endpoint: GET /resolve?type=<type>&id=<id>`);
   });
+
+  // ── Graceful shutdown ────────────────────────────────────────────
+  // Ensures in-flight requests complete before the container stops.
+  // Responds to Docker's SIGTERM (sent by `docker compose down` after
+  // stop_grace_period) and allows the process to exit cleanly.
+  function shutdown(signal) {
+    console.log(`[INTEL] Received ${signal}, shutting down gracefully...`);
+    server.close(() => {
+      console.log('[INTEL] Server closed, exiting.');
+      process.exit(0);
+    });
+
+    // Force exit after 10s if server.close() hangs
+    setTimeout(() => {
+      console.error('[INTEL] Forced shutdown after timeout.');
+      process.exit(1);
+    }, 10_000).unref();
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 boot().catch(e => { console.error('[INTEL] Fatal:', e); process.exit(1); });

@@ -1,0 +1,17 @@
+# =============================================================================
+# OSIRIS — Grafana Dashboard Provisioning
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'OSIRIS Dashboards'
+    orgId: 1
+    folder: 'OSIRIS'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

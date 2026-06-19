@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SIEMAlertSentEvent",
+  "type": "object",
+  "required": ["id", "type", "source", "timestamp", "version", "payload"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["siem.alert.sent"] },
+    "source": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "version": { "type": "string" },
+    "payload": {
+      "type": "object",
+      "required": ["siem_id", "alert_id", "status", "timestamp"],
+      "properties": {
+        "siem_id": { "type": "string" },
+        "alert_id": { "type": "string" },
+        "osiris_alert_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["sent", "failed"] },
+        "error": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

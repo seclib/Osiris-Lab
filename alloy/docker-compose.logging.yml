@@ -1,0 +1,79 @@
+# =============================================================================
+# OSIRIS — Logging Stack (Grafana + Loki + Alloy)
+# Ajoutez ceci à votre docker-compose.yml principal ou déployez séparément
+# =============================================================================
+
+name: osiris-logging
+
+services:
+
+  # =========================================================================
+  # 📊 GRAFANA — Visualisation des logs et métriques
+  # =========================================================================
+  osiris-grafana:
+    image: grafana/grafana:latest
+    container_name: osiris-grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks:
+      - osiris-logging
+    depends_on:
+      - loki
+
+  # =========================================================================
+  # 📝 LOKI — Stockage et indexation des logs
+  # =========================================================================
+  osiris-loki:
+    image: grafana/loki:latest
+    container_name: osiris-loki
+    ports:
+      - "3101:3100"
+    volumes:
+      - loki-data:/loki
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks:
+      - osiris-logging
+
+  # =========================================================================
+  # 🔄 ALLOY — Collecte des logs Docker et métriques
+  # =========================================================================
+  osiris-alloy:
+    image: grafana/alloy:latest
+    container_name: osiris-alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks:
+      - osiris-logging
+      - osiris-net  # Accès au réseau OSIRIS pour les métriques
+    depends_on:
+      loki:
+        condition: service_started
+
+volumes:
+  grafana-data:
+    driver: local
+  loki-data:
+    driver: local
+
+networks:
+  osiris-logging:
+    driver: bridge
+  osiris-net:
+    external: true  # Réseau existant d'OSIRIS

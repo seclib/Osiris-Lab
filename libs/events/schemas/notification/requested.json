@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NotificationRequestedEvent",
+  "description": "Published when a notification needs to be sent",
+  "type": "object",
+  "required": ["id", "type", "source", "timestamp", "version", "payload"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["notification.requested"] },
+    "source": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "version": { "type": "string" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["notification_id", "user_id", "type", "severity", "title", "message"],
+      "properties": {
+        "notification_id": { "type": "string", "format": "uuid" },
+        "user_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["alert", "info", "warning"] },
+        "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "channels": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["websocket", "push", "email"] }
+        },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 5 }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "tenant_id": { "type": "string" },
+        "user_id": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,405 @@
+# =============================================================================
+# OSIRIS — Production-Grade Docker Compose Architecture
+# =============================================================================
+# Features:
+#   - Network isolation (frontend/backend/data)
+#   - Multi-stage builds with health checks
+#   - Redis caching layer
+#   - Grafana + Loki + Alloy observability
+#   - Resource limits and restart policies
+#   - Secrets management
+#   - Nginx reverse proxy with edge caching
+# =============================================================================
+
+name: osiris
+
+# ─── SECRETS ────────────────────────────────────────────────────────────────
+secrets:
+  scanner_key:
+    file: ./.secrets/scanner_key.txt
+  scanner_url:
+    file: ./.secrets/scanner_url.txt
+  firms_api_key:
+    file: ./.secrets/firms_api_key.txt
+  opensky_client_id:
+    file: ./.secrets/opensky_client_id.txt
+  opensky_client_secret:
+    file: ./.secrets/opensky_client_secret.txt
+  n2yo_api_key:
+    file: ./.secrets/n2yo_api_key.txt
+  ais_api_key:
+    file: ./.secrets/ais_api_key.txt
+  discord_bot_url:
+    file: ./.secrets/discord_bot_url.txt
+  redis_password:
+    file: ./.secrets/redis_password.txt
+
+# ─── SERVICES ──────────────────────────────────────────────────────────────
+
+services:
+
+  # =========================================================================
+  # 🔄 REDIS — Caching Layer (shared state, rate limiting, session store)
+  # =========================================================================
+  osiris-redis:
+    image: redis:7-alpine
+    container_name: osiris-redis
+    command: >
+      redis-server
+      --requirepass /run/secrets/redis_password
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    secrets:
+      - redis_password
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /data:size=256M
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-backend
+      - osiris-data
+
+  # =========================================================================
+  # 🧠 OSIRIS INTEL — Intelligence Engine (backend service)
+  # =========================================================================
+  osiris-intel:
+    build:
+      context: ./intel
+      dockerfile: Dockerfile
+    image: osiris-intel:${GITHUB_SHA:-latest}
+    container_name: osiris-intel
+    expose:
+      - "4000"
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      INTEL_PORT: 4000
+      REDIS_URL: redis://osiris-redis:6379
+    secrets:
+      - scanner_key
+      - scanner_url
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp:size=32M
+      - /app/cache:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-backend
+      - osiris-data
+    depends_on:
+      osiris-redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🧠 OSIRIS CORE — Next.js 16 (frontend + API)
+  # =========================================================================
+  osiris:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/aiacos/osiris:${GITHUB_SHA:-latest}
+    container_name: osiris
+    ports:
+      - "${OSIRIS_PORT:-3100}:3000"
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      REDIS_URL: redis://osiris-redis:6379
+      SCANNER_KEY_FILE: /run/secrets/scanner_key
+      SCANNER_URL_FILE: /run/secrets/scanner_url
+      FIRMS_API_KEY_FILE: /run/secrets/firms_api_key
+      OPENSKY_CLIENT_ID_FILE: /run/secrets/opensky_client_id
+      OPENSKY_CLIENT_SECRET_FILE: /run/secrets/opensky_client_secret
+      N2YO_API_KEY_FILE: /run/secrets/n2yo_api_key
+      AIS_API_KEY_FILE: /run/secrets/ais_api_key
+      DISCORD_BOT_URL_FILE: /run/secrets/discord_bot_url
+    env_file:
+      - path: .env
+        required: false
+    secrets:
+      - scanner_key
+      - scanner_url
+      - firms_api_key
+      - opensky_client_id
+      - opensky_client_secret
+      - n2yo_api_key
+      - ais_api_key
+      - discord_bot_url
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+      - /app/.next:size=256M
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-frontend
+      - osiris-backend
+      - osiris-data
+    depends_on:
+      osiris-intel:
+        condition: service_healthy
+      osiris-redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🌐 NGINX — Reverse Proxy + Edge Cache
+  # =========================================================================
+  osiris-nginx:
+    image: nginx:alpine
+    container_name: osiris-nginx
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
+      - ./ssl:/etc/nginx/ssl:ro  # TLS certificates (optional)
+    environment:
+      - NGINX_ENV=production
+    restart: unless-stopped
+    stop_grace_period: 10s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /var/run:size=8M
+      - /tmp:size=16M
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/', (r) => { process.exit(r.statusCode < 500 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-frontend
+    depends_on:
+      osiris:
+        condition: service_started
+
+  # =========================================================================
+  # 📊 OBSERVABILITY STACK (Optional — enable with profile)
+  # =========================================================================
+  # Deploy with: docker compose --profile observability up -d
+
+  osiris-alloy:
+    profiles:
+      - observability
+    image: grafana/alloy:latest
+    container_name: osiris-alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+    restart: unless-stopped
+    networks:
+      - osiris-frontend
+      - osiris-logging
+    depends_on:
+      - loki
+
+  osiris-loki:
+    profiles:
+      - observability
+    image: grafana/loki:latest
+    container_name: osiris-loki
+    ports:
+      - "3101:3100"
+    volumes:
+      - loki-data:/loki
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    networks:
+      - osiris-logging
+
+  osiris-grafana:
+    profiles:
+      - observability
+    image: grafana/grafana:latest
+    container_name: osiris-grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    restart: unless-stopped
+    networks:
+      - osiris-logging
+    depends_on:
+      - loki
+
+# ─── VOLUMES ───────────────────────────────────────────────────────────────
+volumes:
+  redis-data:
+    driver: local
+  nginx-cache:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/osiris/nginx-cache
+      o: bind
+  nginx-logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/osiris/nginx-logs
+      o: bind
+  loki-data:
+    driver: local
+  grafana-data:
+    driver: local
+  alloy-data:
+    driver: local
+
+# ─── NETWORKS (Isolation Strategy) ─────────────────────────────────────────
+networks:
+  # Frontend network: Public-facing services
+  osiris-frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+          gateway: 172.20.1.1
+
+  # Backend network: Internal API services
+  osiris-backend:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.2.0/24
+          gateway: 172.20.2.1
+
+  # Data network: Data services (Redis, databases)
+  osiris-data:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.3.0/24
+          gateway: 172.20.3.1
+
+  # Logging network: Observability stack
+  osiris-logging:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.20.4.0/24
+          gateway: 172.20.4.1

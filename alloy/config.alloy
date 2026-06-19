@@ -1,0 +1,131 @@
+// =============================================================================
+// OSIRIS — Grafana Alloy Configuration
+// Collecte les logs Docker et les métriques, les envoie vers Loki
+// =============================================================================
+
+// ─── Sources ────────────────────────────────────────────────────────────────
+
+// Source 1: Logs Docker (json-file)
+loki.source.docker "osiris_logs" {
+  host    = "unix:///var/run/docker.sock"
+  targets = [
+    { __path__ = "/var/lib/docker/containers/*/*.log" },
+  ]
+  
+  // Filtrer par conteneurs OSIRIS uniquement
+  include = {
+    __container_name__ = "osiris|osiris-intel|osiris-cache|osiris-alloy|osiris-loki|osiris-grafana"
+  }
+}
+
+// Source 2: Métriques Docker (cAdvisor intégré)
+prometheus.exporter.unix "osiris_metrics" {
+  // Collecte les métriques système du host
+}
+
+// Source 3: Métriques des conteneurs (via cAdvisor)
+prometheus.scrape "docker_containers" {
+  targets    = [{"__address__" = "unix:/var/run/docker.sock"}]
+  forward_to = [prometheus.relabel.osiris_metrics.input]
+}
+
+// ─── Relabeling ─────────────────────────────────────────────────────────────
+
+prometheus.relabel "osiris_metrics" {
+  forward_to = [loki.write.osiris_loki.input]
+  
+  rule {
+    source_labels = ["__name__"]
+    regex         = "container_(.*)"
+    target_label  = "container_metric"
+  }
+}
+
+// ─── Destination: Loki ──────────────────────────────────────────────────────
+
+loki.write "osiris_loki" {
+  endpoint {
+    url = "http://osiris-loki:3100/loki/api/v1/push"
+  }
+}
+
+// ─── Export pour Grafana ────────────────────────────────────────────────────
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = "http://osiris-grafana:3000/api/prom/push"
+  }
+}
+
+// ─── Pipeline de traitement ─────────────────────────────────────────────────
+
+loki.process "osiris_logs" {
+  stage.json {
+    expressions = {
+      log = "log"
+      stream = "stream"
+      time = "time"
+    }
+  }
+  
+  stage.regex {
+    expressions = {
+      level = "(?i)(error|warn|info|debug|trace)"
+    }
+  }
+  
+  stage.labels {
+    values = {
+      level = "",
+      container_name = "",
+      service = "",
+    }
+  }
+  
+  forward_to = [loki.write.osiris_loki.receiver]
+}
+
+// ─── Alerting (optionnel) ───────────────────────────────────────────────────
+
+loki.alert "osiris_alerts" {
+  rule {
+    alert = "HighErrorRate"
+    expr  = "sum(rate({level=~\"error|critical\"}[5m])) > 10"
+    for   = "5m"
+    labels = {
+      severity = "critical"
+    }
+    annotations = {
+      summary = "High error rate detected in OSIRIS"
+    }
+  }
+  
+  rule {
+    alert = "ServiceDown"
+    expr  = "up{job=\"osiris\"} == 0"
+    for   = "1m"
+    labels = {
+      severity = "critical"
+    }
+    annotations = {
+      summary = "OSIRIS service is down"
+    }
+  }
+}
+
+// ─── Discovery automatique des services ─────────────────────────────────────
+
+discovery.docker "osiris_services" {
+  host    = "unix:///var/run/docker.sock"
+  refresh_interval = "15s"
+}
+
+// Scraper pour les métriques des conteneurs
+prometheus.scrape "osiris_containers" {
+  forward_to = [loki.write.osiris_loki.input]
+  
+  targets = discovery.docker.osiris_services.targets
+  
+  job_name   = "osiris-containers"
+  metrics_path = "/metrics"
+}

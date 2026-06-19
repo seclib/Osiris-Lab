@@ -1,0 +1,1218 @@
+# =============================================================================
+# OSIRIS-Lab v2 — Production-Grade Docker Compose Architecture
+# =============================================================================
+# Based on: docs/ARCHITECTURE.md
+# Event-driven microservices platform for OSINT/Threat Intelligence
+# =============================================================================
+
+name: osiris-v2
+
+# ─── SECRETS ────────────────────────────────────────────────────────────────
+# Use: docker compose --env-file .env.v2 up -d
+# See .env.v2.example for all variables
+# All sensitive values via Docker secrets (never in environment variables)
+secrets:
+  postgres_password:
+    file: ./.secrets/postgres_password.txt
+  neo4j_password:
+    file: ./.secrets/neo4j_password.txt
+  redis_password:
+    file: ./.secrets/redis_password.txt
+  minio_root_password:
+    file: ./.secrets/minio_root_password.txt
+  nats_password:
+    file: ./.secrets/nats_password.txt
+  jwt_secret:
+    file: ./.secrets/jwt_secret.txt
+  encryption_key:
+    file: ./.secrets/encryption_key.txt
+  vault_root_token:
+    file: ./.secrets/vault_root_token.txt
+
+# ─── SERVICES ──────────────────────────────────────────────────────────────
+
+services:
+
+  # =========================================================================
+  # 🔐 API GATEWAY — Kong (Public DMZ)
+  # =========================================================================
+  api-gateway:
+    image: kong:3.5-alpine
+    container_name: osiris-api-gateway
+    ports:
+      - "8000:8000"  # Proxy
+      - "8443:8443"  # Proxy SSL
+      - "8001:8001"  # Admin API (internal only)
+      - "8444:8444"  # Admin API SSL (internal only)
+    volumes:
+      - ./kong/kong.yml:/etc/kong/kong.yml:ro
+      - ./kong/plugins:/usr/local/kong/plugins:ro
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_PLUGINS: bundled,cors,rate-limiting,jwt,acl,oauth2-proxy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+      - /var/run:size=8M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-public-dmz
+      - osiris-internal-api
+    depends_on:
+      - bff
+      - ai-engine
+      - graph-engine
+      - search-engine
+      - ioc-engine
+      - geo-engine
+      - workflow-engine
+
+  # =========================================================================
+  # 📊 BFF — GraphQL Backend for Frontend (Apollo Server)
+  # =========================================================================
+  bff:
+    build:
+      context: ./services/bff
+      dockerfile: Dockerfile
+    image: osiris-bff:${GITHUB_SHA:-latest}
+    container_name: osiris-bff
+    expose:
+      - "4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+    secrets:
+      - jwt_secret
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🧠 AI ENGINE — Multi-Agent Reasoning (Python/FastAPI + LangGraph)
+  # =========================================================================
+  ai-engine:
+    build:
+      context: ./services/ai-engine
+      dockerfile: Dockerfile
+    image: osiris-ai-engine:${GITHUB_SHA:-latest}
+    container_name: osiris-ai-engine
+    expose:
+      - "5000"
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      PORT: 5000
+      NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+      POSTGRES_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+      NEO4J_URL: bolt://neo4j:7687
+      QDRANT_URL: http://qdrant:6333
+      ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
+    secrets:
+      - encryption_key
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M
+      - /app/cache:size=256M
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🔍 GRAPH ENGINE — Neo4j Causal Cluster
+  # =========================================================================
+  neo4j:
+    image: neo4j:5-enterprise
+    container_name: osiris-neo4j
+    command: >
+      neo4j
+      --dbms.security.auth_enabled=true
+      --dbms.security.procedures.unrestricted=apoc.*
+      --dbms.memory.heap.initial_size=512m
+      --dbms.memory.heap.max_size=2G
+      --dbms.memory.pagecache.size=1G
+      --dbms.tx_log.rotation.retention_policy=100M
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      NEO4J_PASSWORD_FILE: /run/secrets/neo4j_password
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 2G
+      NEO4J_dbms_memory_pagecache_size: 1G
+    secrets:
+      - neo4j_password
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  # =========================================================================
+  # 🔎 SEARCH ENGINE — Qdrant (Vector) + Elasticsearch (Full-text)
+  # =========================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: osiris-qdrant
+    expose:
+      - "6333"  # REST API
+      - "6334"  # gRPC
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: osiris-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx2g"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  # =========================================================================
+  # 🛡️ IOC ENGINE — Threat Intelligence (Go)
+  # =========================================================================
+  ioc-engine:
+    build:
+      context: ./services/ioc-engine
+      dockerfile: Dockerfile
+    image: osiris-ioc-engine:${GITHUB_SHA:-latest}
+    container_name: osiris-ioc-engine
+    expose:
+      - "6000"
+    environment:
+      NATS_URL: nats://nats:4222
+      POSTGRES_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+      REDIS_URL: redis://redis:6379
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🗺️ GEOINT ENGINE — Geospatial Intelligence (Python/FastAPI)
+  # =========================================================================
+  geo-engine:
+    build:
+      context: ./services/geo-engine
+      dockerfile: Dockerfile
+    image: osiris-geo-engine:${GITHUB_SHA:-latest}
+    container_name: osiris-geo-engine
+    expose:
+      - "7000"
+    environment:
+      NATS_URL: nats://nats:4222
+      POSTGRES_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+      REDIS_URL: redis://redis:6379
+      MINIO_URL: http://minio:9000
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # ⚙️ WORKFLOW ENGINE — Temporal.io (DAG Execution)
+  # =========================================================================
+  temporal:
+    image: temporalio/auto-setup:1.22
+    container_name: osiris-temporal
+    expose:
+      - "7233"  # Frontend
+      - "7234"  # gRPC
+      - "7235"  # mTLS
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=osiris
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
+    volumes:
+      - temporal-data:/tmp/temporal
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "temporal", "cluster", "health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🧩 PLUGIN ENGINE — Hot-loadable Modules (Node.js)
+  # =========================================================================
+  plugin-engine:
+    build:
+      context: ./services/plugin-engine
+      dockerfile: Dockerfile
+    image: osiris-plugin-engine:${GITHUB_SHA:-latest}
+    container_name: osiris-plugin-engine
+    expose:
+      - "8000"
+    environment:
+      NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+      PLUGIN_DIR: /plugins
+    volumes:
+      - ./plugins:/plugins:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+      - /plugins/workspace:size=128M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # 📥 INGESTION API — OSINT Data Ingestion
+  # =========================================================================
+  ingestion-api:
+    build:
+      context: ./services/ingestion-api
+      dockerfile: Dockerfile
+    image: osiris-ingestion-api:${GITHUB_SHA:-latest}
+    container_name: osiris-ingestion-api
+    expose:
+      - "9000"
+    environment:
+      NATS_URL: nats://nats:4222
+      POSTGRES_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+      MINIO_URL: http://minio:9000
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # =========================================================================
+  # 🔄 NORMALIZATION SERVICE — Data Enrichment
+  # =========================================================================
+  normalization:
+    build:
+      context: ./services/normalization
+      dockerfile: Dockerfile
+    image: osiris-normalization:${GITHUB_SHA:-latest}
+    container_name: osiris-normalization
+    environment:
+      NATS_URL: nats://nats:4222
+      POSTGRES_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # =========================================================================
+  # � WORKFLOW DESIGNER — DAG-based Workflow Management (Node.js)
+  # =========================================================================
+  workflow-designer:
+    build:
+      context: ./services/workflow-designer-service
+      dockerfile: Dockerfile
+    image: osiris-workflow-designer:${GITHUB_SHA:-latest}
+    container_name: osiris-workflow-designer
+    expose:
+      - "4001"
+    environment:
+      NODE_ENV: production
+      PORT: 4001
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgresql://osiris:${POSTGRES_PASSWORD}@postgres:5432/osiris
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-internal-api
+      - osiris-data-layer
+      - osiris-event-bus
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # =========================================================================
+  # �🚀 EVENT BUS — NATS JetStream Cluster
+  # =========================================================================
+  nats:
+    image: nats:2-alpine
+    container_name: osiris-nats
+    command: >
+      nats-server
+      --jetstream
+      --store_dir=/data
+      --http_port=8222
+      --port=4222
+      --cluster_name=osiris-nats
+      --cluster=nats://nats:6222
+      --routes=nats://nats:6222
+      --user=${NATS_USER}
+      --pass=${NATS_PASSWORD}
+    environment:
+      NATS_USER: ${NATS_USER}
+      NATS_PASSWORD_FILE: /run/secrets/nats_password
+    secrets:
+      - nats_password
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-event-bus
+
+  # =========================================================================
+  # 🗄️ POSTGRESQL — Primary Database (Patroni Cluster)
+  # =========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: osiris-postgres
+    environment:
+      POSTGRES_USER: osiris
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: osiris
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - CHOWN
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U osiris"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  # =========================================================================
+  # 💾 REDIS — Cache Layer (Cluster)
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: osiris-redis
+    command: >
+      redis-server
+      --requirepass /run/secrets/redis_password
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --appendonly yes
+    secrets:
+      - redis_password
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /data:size=1G
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '0.5'
+        reservations:
+          memory: 1G
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  # =========================================================================
+  # 📦 MINIO — Object Storage (S3-compatible)
+  # =========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: osiris-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: osiris
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets:
+      - minio_root_password
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-data-layer
+
+  # =========================================================================
+  # 📊 OBSERVABILITY — Grafana Alloy (Logs + Metrics + Traces)
+  # =========================================================================
+  alloy:
+    image: grafana/alloy:latest
+    container_name: osiris-alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:1234/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-observability
+      - osiris-event-bus
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+
+  loki:
+    image: grafana/loki:latest
+    container_name: osiris-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-observability
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: osiris-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=90d'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-observability
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: osiris-tempo
+    command: -config.file=/etc/tempo/tempo.yml
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/tmp/tempo
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-observability
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: osiris-grafana
+    ports:
+      - "3002:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/grafana_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3002
+    secrets:
+      - grafana_password
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - osiris-observability
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+
+# ─── VOLUMES ───────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+    driver: local
+  neo4j-data:
+    driver: local
+  neo4j-logs:
+    driver: local
+  qdrant-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  nats-data:
+    driver: local
+  temporal-data:
+    driver: local
+  alloy-data:
+    driver: local
+  loki-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  tempo-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# ─── NETWORKS (Isolation Strategy) ─────────────────────────────────────────
+networks:
+  # Public DMZ — Only API Gateway exposed to internet
+  osiris-public-dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+          gateway: 172.20.1.1
+
+  # Internal API — All backend services
+  osiris-internal-api:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.2.0/24
+          gateway: 172.20.2.1
+
+  # Data Layer — Databases and storage
+  osiris-data-layer:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.3.0/24
+          gateway: 172.20.3.1
+
+  # Event Bus — NATS messaging
+  osiris-event-bus:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.4.0/24
+          gateway: 172.20.4.1
+
+  # Observability — Monitoring stack
+  osiris-observability:
+    driver: bridge
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.20.5.0/24
+          gateway: 172.20.5.1
