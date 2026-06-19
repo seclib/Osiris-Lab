@@ -18,6 +18,7 @@ export const MetricNames = {
   NOTIFICATION_VALIDATION_FAILED: 'notification.validation_failed',
   NOTIFICATION_CREATE_FAILED: 'notification.create_failed',
   NOTIFICATION_CREATE_DURATION_MS: 'notification.create_duration_ms',
+  NOTIFICATION_EVENT_PUBLISH_FAILED: 'notification.event_publish_failed',
 } as const;
 
 export const DefaultValues = {

@@ -17,7 +17,7 @@
       "@osiris/logger": ["../../libs/shared/src/index.ts"],
       "@osiris/metrics": ["../../libs/shared/src/index.ts"]
     },
-    "types": ["node", "jest", "express", "pg", "redis"]
+    "types": ["node", "jest", "express", "pg", "redis", "vitest"]
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]

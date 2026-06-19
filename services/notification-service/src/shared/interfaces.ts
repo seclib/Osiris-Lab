@@ -12,6 +12,7 @@ export interface Logger {
 export interface Metrics {
   increment(metric: string, tags?: Record<string, string>): void;
   histogram(metric: string, value: number, tags?: Record<string, string>): void;
+  gauge(metric: string, value: number, tags?: Record<string, string>): void;
 }
 
 export interface EventPublisher {

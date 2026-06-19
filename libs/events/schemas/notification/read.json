@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Notification Read Event",
+  "description": "Event published when a notification has been marked as read",
+  "type": "object",
+  "required": ["notificationId", "userId", "readAt"],
+  "properties": {
+    "notificationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique notification identifier"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who read the notification"
+    },
+    "readAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when notification was read"
+    },
+    "timeToReadMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Time between notification sent and read (milliseconds)"
+    }
+  }
+}

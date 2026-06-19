@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Notification Sent Event",
+  "description": "Event published when a notification has been sent",
+  "type": "object",
+  "required": ["notificationId", "userId", "type", "channel", "sentAt"],
+  "properties": {
+    "notificationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique notification identifier"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who received the notification"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["alert", "info", "warning", "system"],
+      "description": "Type of notification"
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["websocket", "push", "email"],
+      "description": "Channel used to send the notification"
+    },
+    "sentAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when notification was sent"
+    },
+    "title": {
+      "type": "string",
+      "description": "Notification title"
+    },
+    "message": {
+      "type": "string",
+      "description": "Notification message content"
+    },
+    "data": {
+      "type": "object",
+      "description": "Additional notification data"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Workflow Step Completed Event",
+  "description": "Event published when a workflow step has completed",
+  "type": "object",
+  "required": ["executionId", "workflowId", "stepId", "stepName", "status", "completedAt"],
+  "properties": {
+    "executionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique execution identifier"
+    },
+    "workflowId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Workflow definition identifier"
+    },
+    "stepId": {
+      "type": "string",
+      "description": "Step identifier within the DAG"
+    },
+    "stepName": {
+      "type": "string",
+      "description": "Human-readable step name"
+    },
+    "stepType": {
+      "type": "string",
+      "description": "Type of step (task, condition, parallel, etc.)"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "skipped"],
+      "description": "Step execution status"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when step completed"
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Step execution duration in milliseconds"
+    },
+    "result": {
+      "type": "object",
+      "description": "Step execution result"
+    },
+    "error": {
+      "type": "object",
+      "description": "Error details if failed"
+    },
+    "nextSteps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "IDs of next steps to execute"
+    }
+  }
+}

@@ -166,7 +166,7 @@ npm test
 npm run lint
 ```
 
-### Docker
+### Docker (Standalone)
 
 ```bash
 # Build image
@@ -178,6 +178,48 @@ docker run -p 3001:3001 \
   -e REDIS_URL=redis://... \
   -e NATS_URL=nats://... \
   notification-service
+```
+
+### Docker Compose (OSIRIS Platform)
+
+Le notification-service fait partie de la plateforme OSIRIS. Pour déployer l'ensemble:
+
+```bash
+# Démarrer tous les services
+docker compose up -d
+
+# Reconstruire et démarrer
+docker compose up -d --build
+
+# Voir les logs
+docker compose logs -f notification-service
+
+# Arrêter
+docker compose down
+```
+
+**Accès:**
+- **Host:** `http://localhost:3001` (via `OSIRIS_PORT`, défaut 3100)
+- **Container:** `http://notification-service:3001` (réseau interne)
+- **Health:** `http://localhost:3100/api/health` (via API Gateway)
+
+**Variables d'environnement:**
+- `DATABASE_URL` - PostgreSQL connection string
+- `REDIS_URL` - Redis connection string
+- `NATS_URL` - NATS server URL
+- `PORT` - Port interne (3000, ne pas changer)
+
+**Secrets Docker:**
+```bash
+# Créer le répertoire secrets
+mkdir -p .secrets
+
+# Générer les secrets (exemple)
+echo "your-db-password" > .secrets/db_password.txt
+echo "your-jwt-secret" > .secrets/jwt_secret.txt
+
+# Utiliser avec Docker Swarm
+docker secret create db_password .secrets/db_password.txt
 ```
 
 ---

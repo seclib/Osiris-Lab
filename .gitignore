@@ -82,12 +82,7 @@ dist/
 build/
 .next/
 docs/
-worldwideview/
-.agents/*
-.next/*
-
-osiris/
 AGENTS.md
-.clinerules/
-cline.md
-.cline
+.clinerules/*
+.cline/*
+.secrets/*

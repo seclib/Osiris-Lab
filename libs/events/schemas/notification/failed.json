@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Notification Failed Event",
+  "description": "Event published when a notification delivery has failed",
+  "type": "object",
+  "required": ["notificationId", "userId", "channel", "failedAt", "error"],
+  "properties": {
+    "notificationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique notification identifier"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who should have received the notification"
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["websocket", "push", "email"],
+      "description": "Channel that failed to deliver"
+    },
+    "failedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when delivery failed"
+    },
+    "error": {
+      "type": "string",
+      "description": "Error message describing the failure"
+    },
+    "errorCode": {
+      "type": "string",
+      "description": "Machine-readable error code"
+    },
+    "retryCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of retry attempts made"
+    },
+    "willRetry": {
+      "type": "boolean",
+      "description": "Whether the system will retry delivery"
+    }
+  }
+}
