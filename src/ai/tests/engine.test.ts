@@ -5,11 +5,11 @@
  * Run with: npx vitest run src/ai/tests/
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { AIEngine, getAIEngine, resetAIEngine } from '../engine/AIEngine';
 import { LLMProvider } from '../engine/types';
 import type { ModelConfig, CompletionRequest, CompletionResponse } from '../engine/types';
-import { ProviderError } from '../adapters/interfaces';
+import { ProviderError, LLMProviderAdapter } from '../adapters/interfaces';
 
 // ─── Mock Adapter ────────────────────────────────────────────────────────────
 
@@ -30,7 +30,9 @@ class MockLLMAdapter implements LLMProviderAdapter {
     if (this.shouldFail) {
       throw new ProviderError('Mock failure', 'mock', 'INTERNAL_ERROR');
     }
-    await this.delay(this.delayMs);
+    if (this.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    }
     return {
       content: this.responseContent,
       model: request.model,
@@ -63,7 +65,7 @@ const createMockConfig = (provider: LLMProvider = LLMProvider.GEMINI, modelId: s
   apiKey: 'test-key',
 });
 
-const createEngine = (config?: Partial<ModelConfig>) => {
+const createEngine = (config?: { fallbackModels?: ModelConfig[]; enableMetrics?: boolean }) => {
   resetAIEngine();
   const engine = getAIEngine({
     defaultModel: createMockConfig(LLMProvider.GEMINI, 'gemini-2.0-flash'),
@@ -151,7 +153,7 @@ describe('AIEngine', () => {
     });
 
     it('should use fallback on provider failure', async () => {
-      const engine = createEngine();
+      const engine = createEngine({ fallbackModels: [createMockConfig(LLMProvider.OPENAI, 'gpt-4o-mini')] });
       
       const failingMock = new MockLLMAdapter();
       failingMock.setShouldFail(true);
@@ -316,7 +318,7 @@ describe('RAGService', () => {
     const doc = {
       id: 'doc-1',
       content: 'This is a test document about AI. It contains multiple sentences. The AI engine is powerful.',
-      metadata: { source: 'test', title: 'Test Doc' },
+      metadata: { source: 'test', type: 'text', timestamp: Date.now(), title: 'Test Doc' },
     };
 
     const chunksCount = await rag.ingest(doc);
@@ -332,8 +334,8 @@ describe('RAGService', () => {
     const rag = new RAGService();
 
     await rag.ingestBatch([
-      { id: 'doc-1', content: 'First document', metadata: { source: 'test' } },
-      { id: 'doc-2', content: 'Second document', metadata: { source: 'test' } },
+      { id: 'doc-1', content: 'First document', metadata: { source: 'test', type: 'text', timestamp: Date.now() } },
+      { id: 'doc-2', content: 'Second document', metadata: { source: 'test', type: 'text', timestamp: Date.now() } },
     ]);
 
     const stats = rag.stats();
@@ -344,7 +346,7 @@ describe('RAGService', () => {
     const { RAGService } = await import('../rag/RAGService');
     const rag = new RAGService();
 
-    await rag.ingest({ id: 'doc-1', content: 'Test', metadata: { source: 'test' } });
+    await rag.ingest({ id: 'doc-1', content: 'Test', metadata: { source: 'test', type: 'text', timestamp: Date.now() } });
     rag.remove('doc-1');
 
     const stats = rag.stats();
@@ -357,11 +359,11 @@ describe('RAGService', () => {
     const content = 'Sentence one. Sentence two. Sentence three. Sentence four. Sentence five.';
     
     const fixedRag = new RAGService({ chunkStrategy: 'fixed', chunkSize: 20, chunkOverlap: 5 });
-    const fixedChunks = await fixedRag.ingest({ id: 'fixed', content, metadata: { source: 'test' } });
+    const fixedChunks = await fixedRag.ingest({ id: 'fixed', content, metadata: { source: 'test', type: 'text', timestamp: Date.now() } });
     expect(fixedChunks).toBeGreaterThan(0);
 
     const sentenceRag = new RAGService({ chunkStrategy: 'sentence', chunkSize: 100, chunkOverlap: 10 });
-    const sentenceChunks = await sentenceRag.ingest({ id: 'sentence', content, metadata: { source: 'test' } });
+    const sentenceChunks = await sentenceRag.ingest({ id: 'sentence', content, metadata: { source: 'test', type: 'text', timestamp: Date.now() } });
     expect(sentenceChunks).toBeGreaterThan(0);
   });
 });
@@ -380,7 +382,6 @@ describe('AgentOrchestrator', () => {
       systemPrompt: 'You are a test agent.',
       model: createMockConfig(LLMProvider.GEMINI, 'gemini-2.0-flash'),
       tools: [],
-      maxIterations: 5,
     });
 
     const agents = orchestrator.listAgents();
@@ -408,7 +409,6 @@ describe('AgentOrchestrator', () => {
       systemPrompt: 'You are a test agent.',
       model: createMockConfig(LLMProvider.GEMINI, 'gemini-2.0-flash'),
       tools: [],
-      maxIterations: 5,
     });
 
     const result = await orchestrator.execute('test-agent', 'Hello', 'session-1');
