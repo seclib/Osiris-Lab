@@ -1,5 +1,5 @@
 import { INotificationRepository } from '../../domain/repositories/INotificationRepository';
-import { Logger } from '../../application/commands/SendNotificationCommand';
+import { Logger } from '../../shared/interfaces';
 
 export interface MarkNotificationReadCommandInput {
   notificationId: string;

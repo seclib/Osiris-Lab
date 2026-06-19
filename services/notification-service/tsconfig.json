@@ -4,7 +4,7 @@
     "module": "commonjs",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -17,8 +17,8 @@
       "@osiris/logger": ["../../libs/shared/src/index.ts"],
       "@osiris/metrics": ["../../libs/shared/src/index.ts"]
     },
-    "types": ["node"]
+    "types": ["node", "jest", "express", "pg", "redis"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist"]
 }

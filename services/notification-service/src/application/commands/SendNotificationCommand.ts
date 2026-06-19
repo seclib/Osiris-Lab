@@ -1,19 +1,10 @@
-import { v4 as uuidv4 } from 'uuid';
 import { Notification, NotificationChannel, NotificationSeverity, NotificationType } from '../../domain/entities/Notification';
 import { INotificationRepository } from '../../domain/repositories/INotificationRepository';
 import { NotificationDomainService } from '../../domain/services/NotificationDomainService';
-
-// Local interfaces to avoid external dependencies
-export interface Logger {
-  info(message: string, context?: Record<string, unknown>): void;
-  warn(message: string, context?: Record<string, unknown>): void;
-  error(message: string, context?: Record<string, unknown>): void;
-}
-
-export interface Metrics {
-  increment(metric: string, tags?: Record<string, string>): void;
-  histogram(metric: string, value: number, tags?: Record<string, string>): void;
-}
+import { NotificationValidator } from '../../domain/validators/NotificationValidator';
+import { Logger, Metrics, EventPublisher } from '../../shared/interfaces';
+import { EventSubjects, MetricNames } from '../../shared/constants';
+import { generateId } from '../../shared/utils';
 
 export interface SendNotificationCommandInput {
   userId: string;
@@ -39,9 +30,7 @@ export class SendNotificationCommand {
     private domainService: NotificationDomainService,
     private logger: Logger,
     private metrics: Metrics,
-    private natsPublisher?: {
-      publish: (subject: string, data: Buffer) => Promise<void>;
-    }
+    private natsPublisher?: EventPublisher
   ) {}
 
   async execute(input: SendNotificationCommandInput): Promise<SendNotificationCommandResult> {
@@ -53,6 +42,21 @@ export class SendNotificationCommand {
     });
 
     try {
+      // Validate input (CRITICAL: prevent invalid data)
+      try {
+        NotificationValidator.validateNotificationInput(input);
+      } catch (validationError) {
+        this.logger.warn('Input validation failed', {
+          error: validationError instanceof Error ? validationError.message : 'Unknown error',
+          userId: input.userId,
+        });
+        this.metrics.increment(MetricNames.NOTIFICATION_VALIDATION_FAILED);
+        return {
+          success: false,
+          error: validationError instanceof Error ? validationError.message : 'Validation failed',
+        };
+      }
+
       // Create notification entity
       const notification = new Notification({
         userId: input.userId,
@@ -69,7 +73,7 @@ export class SendNotificationCommand {
       const validation = this.domainService.validate(notification);
       if (!validation.valid) {
         this.logger.warn('Notification validation failed', { errors: validation.errors });
-        this.metrics.increment('notification.validation_failed');
+        this.metrics.increment(MetricNames.NOTIFICATION_VALIDATION_FAILED);
         return {
           success: false,
           error: `Validation failed: ${validation.errors.join(', ')}`,
@@ -81,9 +85,9 @@ export class SendNotificationCommand {
 
       // Publish notification.requested event
       if (this.natsPublisher) {
-        await this.natsPublisher.publish('notification.requested', Buffer.from(JSON.stringify({
-          id: uuidv4(),
-          type: 'notification.requested',
+        await this.natsPublisher.publish(EventSubjects.NOTIFICATION_REQUESTED, Buffer.from(JSON.stringify({
+          id: generateId('evt_'),
+          type: EventSubjects.NOTIFICATION_REQUESTED,
           source: 'notification-service',
           timestamp: new Date().toISOString(),
           version: '1.0.0',
@@ -110,13 +114,13 @@ export class SendNotificationCommand {
         userId: input.userId,
       });
 
-      this.metrics.increment('notification.created', {
+        this.metrics.increment(MetricNames.NOTIFICATION_CREATED, {
         type: input.type,
         severity: input.severity,
       });
 
       const duration = Date.now() - startTime;
-      this.metrics.histogram('notification.create_duration_ms', duration);
+      this.metrics.histogram(MetricNames.NOTIFICATION_CREATE_DURATION_MS, duration);
 
       return {
         success: true,
@@ -128,7 +132,7 @@ export class SendNotificationCommand {
         userId: input.userId,
       });
 
-      this.metrics.increment('notification.create_failed');
+      this.metrics.increment(MetricNames.NOTIFICATION_CREATE_FAILED);
 
       return {
         success: false,

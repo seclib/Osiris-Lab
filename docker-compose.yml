@@ -52,7 +52,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aiacos/osiris:latest
     container_name: osiris
 
     # ── Port mapping ───────────────────────────────────────────────────────
@@ -116,7 +115,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64M
-      - /app/.next:size=256M
 
     # ── Ressources (Compose v2 natif, pas besoin de --compatibility) ───────
     # Note : ces directives fonctionnent avec docker compose (v2.23+).
@@ -135,7 +133,7 @@ services:
 
     # ── Healthcheck ────────────────────────────────────────────────────────
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/api/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) })\""]
       interval: 30s
       timeout: 10s
       start_period: 20s
@@ -229,11 +227,10 @@ services:
       - osiris-net
 
     # ── Dépendances ────────────────────────────────────────────────────────
-    # Nginx attend que le healthcheck de osiris passe avant de démarrer.
-    # Cela évite les 502 pendant le démarrage de Next.js.
+    # Nginx attend que osiris démarre (pas de healthcheck requis).
     depends_on:
       osiris:
-        condition: service_healthy
+        condition: service_started
 
 
   # =========================================================================

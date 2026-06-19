@@ -1,9 +1,38 @@
-import { Pool } from 'pg';
+import { Pool, PoolConfig } from 'pg';
 import { Notification, NotificationChannel, NotificationStatus, NotificationType, NotificationSeverity } from '../../domain/entities/Notification';
 import { INotificationRepository } from '../../domain/repositories/INotificationRepository';
 
 export class PostgresNotificationRepository implements INotificationRepository {
-  constructor(private db: Pool) {}
+  constructor(private db: Pool) {
+    // Configure pool for production use
+    if (this.db.options.max === undefined) {
+      this.db.options.max = 20; // Max connections
+    }
+    if (this.db.options.min === undefined) {
+      this.db.options.min = 5; // Min connections
+    }
+    if (this.db.options.idleTimeoutMillis === undefined) {
+      this.db.options.idleTimeoutMillis = 30000; // 30s
+    }
+    if (this.db.options.connectionTimeoutMillis === undefined) {
+      this.db.options.connectionTimeoutMillis = 5000; // 5s
+    }
+  }
+
+  /**
+   * Create repository with default pool configuration
+   */
+  static create(connectionString: string): PostgresNotificationRepository {
+    const poolConfig: PoolConfig = {
+      connectionString,
+      max: 20,
+      min: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    };
+    const pool = new Pool(poolConfig);
+    return new PostgresNotificationRepository(pool);
+  }
 
   async save(notification: Notification): Promise<Notification> {
     const query = `
