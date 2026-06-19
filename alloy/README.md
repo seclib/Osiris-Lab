@@ -127,7 +127,7 @@ grafana/
 
 ## Migration depuis Promtail
 
-Si vous utilisez déjà Promtail, migrez vers Alloy :
+**Note:** Le projet OSIRIS utilise déjà Grafana Alloy. Cette section est conservée pour référence si vous migrez depuis une ancienne installation utilisant Promtail.
 
 ```bash
 # 1. Exporter la configuration Promtail

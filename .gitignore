@@ -88,10 +88,6 @@ worldwideview/
 
 osiris/
 AGENTS.md
-.clinerules
+.clinerules/
 cline.md
-plugins/
-scraper/
-sdk/
-seeds/
-data/
+.cline
